@@ -160,7 +160,13 @@ data class LocalModelEntity(
     val isInstalled: Boolean,
     val isUserImported: Boolean = false,
     val localFilePath: String = "",
-    val sha256Short: String = ""
+    val sha256Short: String = "",
+    val downloadUrl: String = "",
+    val isDownloading: Boolean = false,
+    val downloadProgress: Float = 0f,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val downloadSpeedMb: Float = 0f
 )
 
 @Entity(tableName = "rag_documents")

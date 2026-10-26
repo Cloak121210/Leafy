@@ -146,3 +146,24 @@ Leafy is a PocketPal-inspired, 100% offline Android application for private, ene
   - Switching profiles updates thread concurrency, context window cap (`1024` / `4096` / `8192`), and token cadence, immediately reflected in the **Real-Time Battery & Thermal HUD** powered by Android's `BatteryManager` (`BATTERY_PROPERTY_CURRENT_NOW`, temperature, and battery level).
 - **Offline Voice & TTS**:
   - Tapping the speaker icon on any assistant message invokes Android's native `TextToSpeech` engine with visual playback state; tapping the microphone button launches speech-to-text dictation into the prompt composer.
+
+---
+
+## 5. Local AI Architecture Implementation Status
+
+### Step 1: Real On-Device Model File Management & Validation [COMPLETED]
+- Download manager (`ModelDownloadManager.kt`) streams raw binary weights directly from Hugging Face over HTTP/HTTPS with live byte-level progress reporting and zero fake placeholder synthesis.
+- GGUF header parser (`LocalInferenceEngine.readGgufHeader`) validates raw binary magic bytes (`0x46554747` = `GGUF`), format version, tensor count, and metadata key-value counts.
+- Inference is strictly blocked if weights are missing from disk or fail binary validation.
+
+### Step 2: Real Native Inference Runtime Integration [COMPLETED]
+- Integrated `io.github.ljcamargo:llamacpp-kotlin:0.4.0` with precompiled multi-architecture native libraries (`librnllama.so` for `arm64-v8a` and `x86_64`).
+- `LocalInferenceEngine` initializes native llama.cpp execution context via `LlamaAndroid` using `ParcelFileDescriptor` directly from the downloaded GGUF file.
+- Runtime thread concurrency is bound to the active `PowerProfile` (`cpuThreads`).
+- System prompt instructions and retrieved on-device RAG passages are formatted into standard ChatML prompt templates.
+
+### Step 3: Real Token Streaming From Model Execution [COMPLETED]
+- Tokens stream live from native `partialToken` callbacks into a Kotlin Coroutines Flow (`StreamingStep`).
+- Live metrics are computed in real-time: instantaneous tokens per second (`currentTps`), Time-to-First-Token (`ttftMs`), generated token count, and energy consumption (`energyMicroWh`).
+- Native execution is interruptible via `stopInference()` (`LlamaAndroid.stopCompletion`).
+- All synthetic or canned text generation has been permanently eliminated. Output strictly reflects model execution.

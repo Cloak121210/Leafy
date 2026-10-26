@@ -4,6 +4,8 @@
 
     <!-- Optional microphone permission for local voice dictation -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Internet permission used strictly for downloading model weight files (.gguf, .pte) from Hugging Face / Model Hub -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <queries>
         <intent>

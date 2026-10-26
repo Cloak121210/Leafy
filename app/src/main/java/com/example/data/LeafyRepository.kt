@@ -1,6 +1,7 @@
 package com.example.data
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.firstOrNull
 
 class LeafyRepository(private val dao: LeafyDao) {
 
@@ -22,6 +23,29 @@ class LeafyRepository(private val dao: LeafyDao) {
         }
         if (dao.countRagDocuments() == 0) {
             dao.insertRagDocuments(defaultRagDocuments())
+        }
+
+        // Verify on-disk file presence: reset any model marked installed whose file does not exist
+        verifyModelFilesOnDisk()
+    }
+
+    suspend fun verifyModelFilesOnDisk() {
+        val models = dao.observeLocalModels().firstOrNull() ?: emptyList()
+        for (model in models) {
+            if (model.isInstalled) {
+                val file = java.io.File(model.localFilePath)
+                if (model.localFilePath.isBlank() || !file.exists() || file.length() <= 0L) {
+                    dao.updateLocalModel(
+                        model.copy(
+                            isInstalled = false,
+                            localFilePath = "",
+                            isDownloading = false,
+                            downloadProgress = 0f,
+                            downloadedBytes = 0L
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -95,6 +119,42 @@ class LeafyRepository(private val dao: LeafyDao) {
     companion object {
         fun defaultLocalModels(): List<LocalModelEntity> = listOf(
             LocalModelEntity(
+                id = "smollm2-135m-q4km",
+                name = "SmolLM2 135M Leaf-Nano",
+                family = "HuggingFace SmolLM2",
+                runtimeId = AiRuntime.LLAMA_CPP.id,
+                quantization = "Q4_K_M",
+                parameters = "135M",
+                sizeMb = 95,
+                ramRequiredMb = 180,
+                contextWindow = 2048,
+                expectedTps = 88.5f,
+                ecoRating = 5,
+                specialty = "Ultra-compact mobile model for instant testing, minimal battery drain and quick download.",
+                isInstalled = false,
+                localFilePath = "",
+                sha256Short = "c31a7b42",
+                downloadUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF/resolve/main/smollm2-135m-instruct-q4_k_m.gguf"
+            ),
+            LocalModelEntity(
+                id = "smollm2-360m-bitnet",
+                name = "SmolLM2 360M Leaf-Micro",
+                family = "HuggingFace SmolLM2",
+                runtimeId = AiRuntime.BITNET_CPP.id,
+                quantization = "1.58-bit i2_s",
+                parameters = "360M",
+                sizeMb = 115,
+                ramRequiredMb = 240,
+                contextWindow = 2048,
+                expectedTps = 78.5f,
+                ecoRating = 5,
+                specialty = "Sub-watt ternary quantized model for battery-conscious local inference.",
+                isInstalled = false,
+                localFilePath = "",
+                sha256Short = "d4901bc2",
+                downloadUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q4_k_m.gguf"
+            ),
+            LocalModelEntity(
                 id = "bitnet-b158-2b-4t",
                 name = "BitNet b1.58 2B4T",
                 family = "Microsoft / Leafy Ternary",
@@ -107,9 +167,10 @@ class LeafyRepository(private val dao: LeafyDao) {
                 expectedTps = 46.8f,
                 ecoRating = 5,
                 specialty = "Ultra-low milliwatt daily assistant using ternary {-1, 0, +1} weights.",
-                isInstalled = true,
-                localFilePath = "/data/local/models/bitnet_b1_58_2b_i2s.gguf",
-                sha256Short = "9f4a2e1c"
+                isInstalled = false,
+                localFilePath = "",
+                sha256Short = "9f4a2e1c",
+                downloadUrl = "https://huggingface.co/microsoft/BiTNet-b1.58-2B-4T-GGUF/resolve/main/bitnet_b1_58-2B-4T-i2_s.gguf"
             ),
             LocalModelEntity(
                 id = "llama-3.2-3b-q4km",
@@ -124,9 +185,10 @@ class LeafyRepository(private val dao: LeafyDao) {
                 expectedTps = 28.4f,
                 ecoRating = 4,
                 specialty = "High-precision reasoning, multi-turn conversation branching & local RAG synthesis.",
-                isInstalled = true,
-                localFilePath = "/data/local/models/llama_3_2_3b_q4_k_m.gguf",
-                sha256Short = "3b8e71d0"
+                isInstalled = false,
+                localFilePath = "",
+                sha256Short = "3b8e71d0",
+                downloadUrl = "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
             ),
             LocalModelEntity(
                 id = "qwen2.5-1.5b-tmac-lut",
@@ -141,9 +203,10 @@ class LeafyRepository(private val dao: LeafyDao) {
                 expectedTps = 52.1f,
                 ecoRating = 5,
                 specialty = "Zero-dequantization table lookup inference for rapid coding & math on ARM CPUs.",
-                isInstalled = true,
-                localFilePath = "/data/local/models/qwen25_1_5b_int3_lut.tmac",
-                sha256Short = "7c11e9a4"
+                isInstalled = false,
+                localFilePath = "",
+                sha256Short = "7c11e9a4",
+                downloadUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
             ),
             LocalModelEntity(
                 id = "phi-3.5-mini-executorch",
@@ -158,9 +221,10 @@ class LeafyRepository(private val dao: LeafyDao) {
                 expectedTps = 33.6f,
                 ecoRating = 4,
                 specialty = "Compiled ExecuTorch .pte graph optimized for XNNPACK & NPU delegation.",
-                isInstalled = true,
-                localFilePath = "/data/local/models/phi35_mini_xnnpack_int4.pte",
-                sha256Short = "e509b32f"
+                isInstalled = false,
+                localFilePath = "",
+                sha256Short = "e509b32f",
+                downloadUrl = "https://huggingface.co/microsoft/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
             ),
             LocalModelEntity(
                 id = "gemma-2-2b-q4km",
@@ -177,7 +241,8 @@ class LeafyRepository(private val dao: LeafyDao) {
                 specialty = "Creative writing, summarization, and structured note analysis.",
                 isInstalled = false,
                 localFilePath = "",
-                sha256Short = "a12f88c3"
+                sha256Short = "a12f88c3",
+                downloadUrl = "https://huggingface.co/google/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf"
             ),
             LocalModelEntity(
                 id = "smollm2-360m-bitnet",
@@ -194,7 +259,8 @@ class LeafyRepository(private val dao: LeafyDao) {
                 specialty = "Instantaneous sub-watt responses for extreme battery saving.",
                 isInstalled = false,
                 localFilePath = "",
-                sha256Short = "d4901bc2"
+                sha256Short = "d4901bc2",
+                downloadUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q4_k_m.gguf"
             ),
             LocalModelEntity(
                 id = "deepseek-r1-1.5b-tmac",
@@ -211,7 +277,8 @@ class LeafyRepository(private val dao: LeafyDao) {
                 specialty = "Step-by-step chain-of-thought reasoning with LUT acceleration.",
                 isInstalled = false,
                 localFilePath = "",
-                sha256Short = "68fa9012"
+                sha256Short = "68fa9012",
+                downloadUrl = "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"
             ),
             LocalModelEntity(
                 id = "llama-3.2-1b-executorch",
@@ -228,7 +295,8 @@ class LeafyRepository(private val dao: LeafyDao) {
                 specialty = "SpinQuant outlier-smoothed weights for ultra-fast mobile NPU/CPU inference.",
                 isInstalled = false,
                 localFilePath = "",
-                sha256Short = "c9214ef8"
+                sha256Short = "c9214ef8",
+                downloadUrl = "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct/resolve/main/llama-3.2-1b.pte"
             )
         )
 

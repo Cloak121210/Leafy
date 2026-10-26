@@ -416,25 +416,30 @@ fun LeafyCleanTopBar(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        val hasActiveModel = activeModel != null && activeModel.isInstalled
+                        val dotColor = if (hasActiveModel) runtimeAccentColor(activeRuntime) else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+                        val titleText = if (hasActiveModel) activeModel.name else "No Model Downloaded"
+                        val subtitleText = if (hasActiveModel) "${activeRuntime.displayName} • ${powerProfile.displayName}" else "Tap to download weights"
+
                         Box(
                             modifier = Modifier
                                 .size(9.dp)
                                 .clip(CircleShape)
-                                .background(runtimeAccentColor(activeRuntime))
+                                .background(dotColor)
                         )
                         Column(
                             modifier = Modifier.weight(1f, fill = false),
                             horizontalAlignment = Alignment.Start
                         ) {
                             Text(
-                                text = activeModel?.name ?: "BitNet b1.58",
+                                text = titleText,
                                 style = MaterialTheme.typography.titleSmall,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = if (hasActiveModel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = "${activeRuntime.displayName} • ${powerProfile.displayName}",
+                                text = subtitleText,
                                 style = MaterialTheme.typography.labelSmall,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,

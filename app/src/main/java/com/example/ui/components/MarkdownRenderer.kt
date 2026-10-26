@@ -486,7 +486,7 @@ fun parseMarkdownBlocks(text: String): List<MarkdownBlock> {
 
     // Flush any pending blocks
     flushQuote()
-    if (inCodeBlock && codeLines.isNotEmpty()) {
+    if (inCodeBlock) {
         blocks.add(MarkdownBlock.CodeBlock(codeLang, codeLines.joinToString("\n")))
     }
 

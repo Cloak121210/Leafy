@@ -55,8 +55,14 @@ class DeviceTelemetryManager(private val context: Context) {
             ?.takeIf { it > 2500 } ?: 4080
 
         val rawCurrentNow = batteryManager?.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW) ?: 0L
-        val measuredMw = if (rawCurrentNow != 0L && abs(rawCurrentNow) in 10_000L..10_000_000L) {
-            val currentMa = abs(rawCurrentNow) / 1000f
+        val isValidCurrent = rawCurrentNow != Long.MIN_VALUE &&
+            rawCurrentNow != 0L &&
+            rawCurrentNow > -50_000_000L &&
+            rawCurrentNow < 50_000_000L
+
+        val safeCurrentNow = if (isValidCurrent) rawCurrentNow else -185_000L
+        val measuredMw = if (isValidCurrent && abs(safeCurrentNow) in 10_000L..10_000_000L) {
+            val currentMa = abs(safeCurrentNow) / 1000f
             ((currentMa * (voltageMv / 1000f))).toInt()
         } else {
             if (isGenerating) activeProfileMilliwatts else (activeProfileMilliwatts * 0.28f).toInt()
@@ -88,7 +94,7 @@ class DeviceTelemetryManager(private val context: Context) {
             isCharging = isCharging,
             batteryTempCelsius = effectiveTempC,
             batteryVoltageMv = voltageMv,
-            currentNowMicroAmps = rawCurrentNow,
+            currentNowMicroAmps = safeCurrentNow,
             instantaneousMilliwatts = measuredMw,
             totalRamMb = totalRamMb,
             availableRamMb = availRamMb,

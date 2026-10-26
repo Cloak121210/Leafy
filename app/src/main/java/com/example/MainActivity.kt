@@ -212,7 +212,8 @@ fun LeafyAppShell(
                             onSwitchSiblingBranch = viewModel::switchSiblingBranch,
                             onToggleSpeak = viewModel::toggleSpeakMessage,
                             onStopStreaming = viewModel::stopStreaming,
-                            onOpenSpecialMenu = { showSpecialCommandMenu = true }
+                            onOpenSpecialMenu = { showSpecialCommandMenu = true },
+                            onNavigateToModels = { viewModel.selectTab(LeafyTab.MODELS) }
                         )
 
                         LeafyTab.MODELS -> ModelsAndRuntimesScreen(
@@ -221,10 +222,13 @@ fun LeafyAppShell(
                                 viewModel.switchModelAndRuntime(model)
                                 viewModel.selectTab(LeafyTab.CHAT)
                             },
-                            onToggleInstallModel = viewModel::toggleInstallModel,
+                            onStartDownload = viewModel::startModelDownload,
+                            onCancelDownload = viewModel::cancelModelDownload,
+                            onDeleteDownloadedModel = viewModel::deleteDownloadedModel,
                             onSelectRuntime = viewModel::switchRuntimeOnly,
                             onImportModelUri = viewModel::importLocalModelFromUri,
-                            onImportCustomModelManual = viewModel::importCustomModelManual
+                            onImportCustomModelManual = viewModel::importCustomModelManual,
+                            onDownloadCustomUrl = viewModel::downloadCustomModelFromUrl
                         )
 
                         LeafyTab.KNOWLEDGE -> KnowledgeAndPersonasScreen(
@@ -339,8 +343,13 @@ fun LeafyAppShell(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    viewModel.switchModelAndRuntime(model)
-                                    showModelSwitcherSheet = false
+                                    if (model.isInstalled) {
+                                        viewModel.switchModelAndRuntime(model)
+                                        showModelSwitcherSheet = false
+                                    } else {
+                                        showModelSwitcherSheet = false
+                                        viewModel.selectTab(LeafyTab.MODELS)
+                                    }
                                 }
                                 .testTag("sheet_model_item_${model.id}"),
                             shape = RoundedCornerShape(18.dp),
@@ -375,6 +384,13 @@ fun LeafyAppShell(
                                                 fontFamily = JetBrainsMonoFontFamily
                                             )
                                         )
+                                        if (model.isInstalled) {
+                                            Text(
+                                                text = "• Downloaded",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
@@ -395,6 +411,18 @@ fun LeafyAppShell(
                                         contentDescription = "Active",
                                         tint = MaterialTheme.colorScheme.primary
                                     )
+                                } else if (!model.isInstalled) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                                    ) {
+                                        Text(
+                                            text = "Download",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
                                 }
                             }
                         }

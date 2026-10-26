@@ -26,7 +26,10 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            tts?.language = Locale.getDefault()
+            val langResult = tts?.setLanguage(Locale.getDefault())
+            if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts?.setLanguage(Locale.US)
+            }
             tts?.setSpeechRate(1.03f)
             tts?.setPitch(1.0f)
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -49,12 +52,7 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
             stop()
             return
         }
-        val cleanText = rawMarkdownText
-            .replace("**", "")
-            .replace("`", "")
-            .replace("#", "")
-            .replace(">", "")
-            .trim()
+        val cleanText = sanitizeForSpeech(rawMarkdownText)
 
         _speakingMessageId.value = messageId
         if (isReady && tts != null) {
@@ -65,6 +63,24 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
                 "leafy_msg_$messageId"
             )
         }
+    }
+
+    private fun sanitizeForSpeech(raw: String): String {
+        return raw
+            // Replace multi-line code blocks with a brief spoken descriptor
+            .replace(Regex("```[\\s\\S]*?```"), " code block omitted. ")
+            // Strip markdown links: [link text](url) -> link text
+            .replace(Regex("\\[([^\\]]+)\\]\\([^)]+\\)"), "$1")
+            // Strip inline code backticks: `code` -> code
+            .replace("`", "")
+            // Strip bold and italic markers
+            .replace(Regex("[*_~]{1,3}"), "")
+            // Strip header markers and blockquotes
+            .replace(Regex("^[#>]+\\s*", RegexOption.MULTILINE), "")
+            // Clean table dividers and dashes
+            .replace("|", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     fun stop() {
