@@ -1,42 +1,35 @@
 package com.example.engine
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Environment
+import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
+import java.io.InputStream
+import java.security.MessageDigest
 import kotlin.coroutines.coroutineContext
 
-data class DownloadStatus(
-    val modelId: String,
+data class LocalModelLoadStatus(
+    val displayName: String,
     val progress: Float, // 0.0 .. 1.0
-    val downloadedBytes: Long,
+    val copiedBytes: Long,
     val totalBytes: Long,
-    val speedMbPerSec: Float,
     val localFilePath: String,
+    val sha256Short: String = "",
     val isComplete: Boolean,
     val error: String? = null
 )
 
 class ModelDownloadManager(private val context: Context) {
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .build()
-
-    private val activeJobs = ConcurrentHashMap<String, Boolean>()
 
     val modelsDir: File
         get() {
@@ -47,186 +40,298 @@ class ModelDownloadManager(private val context: Context) {
             return dir
         }
 
-    fun isModelFilePresent(fileName: String): Boolean {
-        val file = File(modelsDir, fileName)
-        return file.exists() && file.length() > 0
-    }
-
-    fun getLocalModelFile(fileName: String): File {
-        return File(modelsDir, fileName)
-    }
-
     fun deleteModelFile(filePath: String): Boolean {
         if (filePath.isBlank()) return false
         return try {
             val file = File(filePath)
-            if (file.exists()) file.delete() else false
+            // Only delete files inside our app's modelsDir so we never delete a user's external original file if referenced directly
+            if (file.exists() && file.absolutePath.startsWith(modelsDir.absolutePath)) {
+                file.delete()
+            } else {
+                false
+            }
         } catch (_: Exception) {
             false
         }
     }
 
-    fun cancelDownload(modelId: String) {
-        activeJobs[modelId] = false
-    }
-
     /**
-     * Downloads model weight file from the Internet (e.g. Hugging Face direct resolve link)
-     * with live byte-level progress reporting and cancellation support.
+     * Loads a local model file from a user-selected Android Uri (content:// or file://)
+     * into the app's local models directory so native C++ engines (llama.cpp, Bitnet.cpp,
+     * ExecuTorch, T-MAC) can memory-map and read it via POSIX file paths.
      */
-    fun downloadModel(
-        modelId: String,
-        url: String,
-        targetFileName: String,
-        fallbackTotalBytes: Long
-    ): Flow<DownloadStatus> = flow {
-        activeJobs[modelId] = true
-
-        val destinationFile = File(modelsDir, targetFileName)
-        val tempFile = File(modelsDir, "$targetFileName.part")
-
-        var requestSuccess = false
-        var totalBytes = fallbackTotalBytes
-
-        // Attempt real network download
-        if (url.isNotBlank() && (url.startsWith("http://") || url.startsWith("https://"))) {
+    fun importModelFromUri(uri: Uri): Flow<LocalModelLoadStatus> = flow {
+        try {
             try {
-                val request = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", "Leafy-Android-AI/1.0")
-                    .build()
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+                // Not all URI providers support persistable permissions; safe to ignore
+            }
 
-                client.newCall(request).execute().use { response ->
-                    if (response.isSuccessful && response.body != null) {
-                        requestSuccess = true
-                        val body = response.body!!
-                        val contentLength = body.contentLength()
-                        if (contentLength > 0) {
-                            totalBytes = contentLength
-                        }
+            var displayName = "local_model.gguf"
+            var totalBytes = 0L
 
-                        var downloaded = 0L
-                        var lastSampleTime = System.currentTimeMillis()
-                        var lastSampleBytes = 0L
-                        var currentSpeed = 0f
-
-                        body.byteStream().use { input ->
-                            FileOutputStream(tempFile).use { output ->
-                                val buffer = ByteArray(64 * 1024)
-                                var read: Int
-
-                                while (input.read(buffer).also { read = it } != -1) {
-                                    if (activeJobs[modelId] == false || !coroutineContext.isActive) {
-                                        tempFile.delete()
-                                        emit(
-                                            DownloadStatus(
-                                                modelId = modelId,
-                                                progress = 0f,
-                                                downloadedBytes = 0L,
-                                                totalBytes = totalBytes,
-                                                speedMbPerSec = 0f,
-                                                localFilePath = "",
-                                                isComplete = false,
-                                                error = "Download cancelled by user."
-                                            )
-                                        )
-                                        return@flow
-                                    }
-
-                                    output.write(buffer, 0, read)
-                                    downloaded += read
-
-                                    val now = System.currentTimeMillis()
-                                    val deltaMs = now - lastSampleTime
-                                    if (deltaMs >= 400L) {
-                                        val deltaBytes = downloaded - lastSampleBytes
-                                        currentSpeed = (deltaBytes / (1024f * 1024f)) / (deltaMs / 1000f)
-                                        lastSampleTime = now
-                                        lastSampleBytes = downloaded
-
-                                        val prog = (downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 0.99f)
-                                        emit(
-                                            DownloadStatus(
-                                                modelId = modelId,
-                                                progress = prog,
-                                                downloadedBytes = downloaded,
-                                                totalBytes = totalBytes,
-                                                speedMbPerSec = currentSpeed,
-                                                localFilePath = destinationFile.absolutePath,
-                                                isComplete = false
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        if (destinationFile.exists()) {
-                            destinationFile.delete()
-                        }
-                        val renamed = tempFile.renameTo(destinationFile)
-                        if (!renamed && tempFile.exists()) {
-                            tempFile.copyTo(destinationFile, overwrite = true)
-                            tempFile.delete()
-                        }
+            if (uri.scheme == "file" && !uri.path.isNullOrBlank()) {
+                val directFile = File(uri.path!!)
+                if (directFile.exists() && directFile.length() > 0L) {
+                    displayName = directFile.name
+                    totalBytes = directFile.length()
+                    if (directFile.canRead()) {
+                        val sha = computeFileSha256Short(directFile)
                         emit(
-                            DownloadStatus(
-                                modelId = modelId,
+                            LocalModelLoadStatus(
+                                displayName = displayName,
                                 progress = 1.0f,
-                                downloadedBytes = totalBytes,
+                                copiedBytes = totalBytes,
                                 totalBytes = totalBytes,
-                                speedMbPerSec = 0f,
-                                localFilePath = destinationFile.absolutePath,
+                                localFilePath = directFile.absolutePath,
+                                sha256Short = sha,
                                 isComplete = true
-                            )
-                        )
-                        return@flow
-                    } else {
-                        emit(
-                            DownloadStatus(
-                                modelId = modelId,
-                                progress = 0f,
-                                downloadedBytes = 0L,
-                                totalBytes = totalBytes,
-                                speedMbPerSec = 0f,
-                                localFilePath = "",
-                                isComplete = false,
-                                error = "Download failed: HTTP ${response.code} ${response.message}"
                             )
                         )
                         return@flow
                     }
                 }
-            } catch (e: Exception) {
-                tempFile.delete()
+            }
+
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (cursor.moveToFirst()) {
+                    if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
+                        val name = cursor.getString(nameIdx)
+                        if (!name.isNullOrBlank()) {
+                            displayName = name
+                        }
+                    }
+                    if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                        totalBytes = cursor.getLong(sizeIdx)
+                    }
+                }
+            }
+
+            if (displayName == "local_model.gguf") {
+                val lastSeg = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+                if (!lastSeg.isNullOrBlank() && lastSeg.contains('.')) {
+                    displayName = lastSeg
+                }
+            }
+
+            val safeFileName = displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            val destinationFile = File(modelsDir, safeFileName)
+            val tempFile = File(modelsDir, "$safeFileName.importing")
+
+            // If exact same file already exists in modelsDir with same byte size, reuse it
+            if (destinationFile.exists() && totalBytes > 0L && destinationFile.length() == totalBytes) {
+                val sha = computeFileSha256Short(destinationFile)
                 emit(
-                    DownloadStatus(
-                        modelId = modelId,
-                        progress = 0f,
-                        downloadedBytes = 0L,
+                    LocalModelLoadStatus(
+                        displayName = displayName,
+                        progress = 1.0f,
+                        copiedBytes = totalBytes,
                         totalBytes = totalBytes,
-                        speedMbPerSec = 0f,
-                        localFilePath = "",
-                        isComplete = false,
-                        error = "Download failed: ${e.message ?: "Network error"}. Please check your internet connection."
+                        localFilePath = destinationFile.absolutePath,
+                        sha256Short = sha,
+                        isComplete = true
                     )
                 )
                 return@flow
             }
-        } else {
+
             emit(
-                DownloadStatus(
-                    modelId = modelId,
-                    progress = 0f,
-                    downloadedBytes = 0L,
+                LocalModelLoadStatus(
+                    displayName = displayName,
+                    progress = 0.01f,
+                    copiedBytes = 0L,
                     totalBytes = totalBytes,
-                    speedMbPerSec = 0f,
+                    localFilePath = destinationFile.absolutePath,
+                    isComplete = false
+                )
+            )
+
+            var pfd: ParcelFileDescriptor? = null
+            val inputStream: InputStream? = try {
+                context.contentResolver.openInputStream(uri)
+            } catch (_: Exception) {
+                pfd = context.contentResolver.openFileDescriptor(uri, "r")
+                pfd?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
+            }
+
+            if (inputStream == null) {
+                emit(
+                    LocalModelLoadStatus(
+                        displayName = displayName,
+                        progress = 0f,
+                        copiedBytes = 0L,
+                        totalBytes = totalBytes,
+                        localFilePath = "",
+                        isComplete = false,
+                        error = "Could not open read stream for selected file: $displayName"
+                    )
+                )
+                return@flow
+            }
+
+            val digest = MessageDigest.getInstance("SHA-256")
+            var hashedBytes = 0L
+            val maxHashSampleBytes = 2L * 1024L * 1024L // Hash first 2 MB + file length for fast cryptographic ID
+
+            var copied = 0L
+            var lastEmitTime = System.currentTimeMillis()
+
+            inputStream.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    val buffer = ByteArray(256 * 1024)
+                    var read: Int
+                    while (input.read(buffer).also { read = it } != -1) {
+                        if (!coroutineContext.isActive) {
+                            tempFile.delete()
+                            return@flow
+                        }
+                        output.write(buffer, 0, read)
+                        if (hashedBytes < maxHashSampleBytes) {
+                            val toHash = minOf(read.toLong(), maxHashSampleBytes - hashedBytes).toInt()
+                            digest.update(buffer, 0, toHash)
+                            hashedBytes += toHash
+                        }
+                        copied += read
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastEmitTime >= 250L) {
+                            lastEmitTime = now
+                            val effectiveTotal = if (totalBytes > 0L) totalBytes else copied
+                            val prog = if (totalBytes > 0L) {
+                                (copied.toFloat() / totalBytes.toFloat()).coerceIn(0.01f, 0.99f)
+                            } else {
+                                0.5f
+                            }
+                            emit(
+                                LocalModelLoadStatus(
+                                    displayName = displayName,
+                                    progress = prog,
+                                    copiedBytes = copied,
+                                    totalBytes = effectiveTotal,
+                                    localFilePath = destinationFile.absolutePath,
+                                    isComplete = false
+                                )
+                            )
+                        }
+                    }
+                    output.fd.sync()
+                }
+            }
+
+            try {
+                pfd?.close()
+            } catch (_: Exception) {}
+
+            if (copied <= 0L) {
+                tempFile.delete()
+                emit(
+                    LocalModelLoadStatus(
+                        displayName = displayName,
+                        progress = 0f,
+                        copiedBytes = 0L,
+                        totalBytes = 0L,
+                        localFilePath = "",
+                        isComplete = false,
+                        error = "Selected file '$displayName' is empty (0 bytes)."
+                    )
+                )
+                return@flow
+            }
+
+            if (destinationFile.exists()) {
+                destinationFile.delete()
+            }
+            val renamed = tempFile.renameTo(destinationFile)
+            if (!renamed && tempFile.exists()) {
+                tempFile.copyTo(destinationFile, overwrite = true)
+                tempFile.delete()
+            }
+
+            digest.update(copied.toString().toByteArray(Charsets.UTF_8))
+            val shaHex = digest.digest().joinToString("") { "%02x".format(it) }.take(8)
+
+            emit(
+                LocalModelLoadStatus(
+                    displayName = displayName,
+                    progress = 1.0f,
+                    copiedBytes = copied,
+                    totalBytes = copied,
+                    localFilePath = destinationFile.absolutePath,
+                    sha256Short = shaHex,
+                    isComplete = true
+                )
+            )
+        } catch (e: Exception) {
+            emit(
+                LocalModelLoadStatus(
+                    displayName = "Model Import",
+                    progress = 0f,
+                    copiedBytes = 0L,
+                    totalBytes = 0L,
                     localFilePath = "",
                     isComplete = false,
-                    error = "Invalid model download URL provided."
+                    error = "Failed to load local model file: ${e.message ?: e.javaClass.simpleName}"
                 )
             )
         }
     }.flowOn(Dispatchers.IO)
-}
 
+    /**
+     * Scans local app model directories and standard Download folder (if readable)
+     * for real .gguf, .pte, .tmac, .bitnet, or .bin model files on disk.
+     */
+    fun scanDiskForModelFiles(): List<File> {
+        val supportedExts = setOf("gguf", "pte", "tmac", "bitnet", "bin")
+        val candidateDirs = mutableListOf<File>()
+        candidateDirs.add(modelsDir)
+        context.filesDir?.let { candidateDirs.add(File(it, "models")) }
+        try {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (downloadsDir != null && downloadsDir.exists() && downloadsDir.canRead()) {
+                candidateDirs.add(downloadsDir)
+            }
+        } catch (_: Exception) {}
+
+        val discovered = mutableMapOf<String, File>()
+        for (dir in candidateDirs) {
+            if (!dir.exists() || !dir.canRead()) continue
+            val files = dir.listFiles() ?: continue
+            for (f in files) {
+                if (f.isFile && f.canRead() && f.length() >= 8L) {
+                    val ext = f.extension.lowercase()
+                    if (ext in supportedExts) {
+                        discovered[f.absolutePath] = f
+                    }
+                }
+            }
+        }
+        return discovered.values.toList()
+    }
+
+    fun computeFileSha256Short(file: File): String {
+        if (!file.exists() || file.length() <= 0L) return ""
+        return try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).use { fis ->
+                val buffer = ByteArray(64 * 1024)
+                var totalRead = 0L
+                val maxSample = 1024L * 1024L
+                var read = 0
+                while (totalRead < maxSample && fis.read(buffer).also { read = it } != -1) {
+                    digest.update(buffer, 0, read)
+                    totalRead += read
+                }
+            }
+            digest.update(file.length().toString().toByteArray(Charsets.UTF_8))
+            digest.digest().joinToString("") { "%02x".format(it) }.take(8)
+        } catch (_: Exception) {
+            ""
+        }
+    }
+}

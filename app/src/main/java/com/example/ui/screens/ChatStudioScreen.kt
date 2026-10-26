@@ -11,7 +11,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,7 +19,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,7 +26,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -37,12 +34,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EnergySavingsLeaf
-import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PushPin
@@ -56,7 +51,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -105,11 +99,9 @@ fun ChatStudioScreen(
     var promptInput by rememberSaveable { mutableStateOf("") }
     var editingMessageNode by remember { mutableStateOf<MessageNodeEntity?>(null) }
     var editDraftText by remember { mutableStateOf("") }
-    var showVoiceQuickModal by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
 
-    // Auto-scroll when new messages or streaming tokens arrive
     LaunchedEffect(uiState.activeBranchMessages.size, uiState.streamingPreview?.partialText) {
         val totalItems = uiState.activeBranchMessages.size + (if (uiState.streamingPreview != null) 1 else 0)
         if (totalItems > 0) {
@@ -117,7 +109,7 @@ fun ChatStudioScreen(
         }
     }
 
-    // Native Android Offline SpeechRecognizer Launcher
+    // Real Android SpeechRecognizer Launcher (no fake fallback popup)
     val speechRecognizerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -127,8 +119,6 @@ fun ChatStudioScreen(
             if (!bestTranscript.isNullOrBlank()) {
                 promptInput = if (promptInput.isBlank()) bestTranscript else "$promptInput $bestTranscript"
             }
-        } else {
-            showVoiceQuickModal = true
         }
     }
 
@@ -140,19 +130,15 @@ fun ChatStudioScreen(
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Leafy (100% Offline)…")
+                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Leafy (Offline)…")
                 }
                 speechRecognizerLauncher.launch(intent)
-            } catch (_: Exception) {
-                showVoiceQuickModal = true
-            }
-        } else {
-            showVoiceQuickModal = true
+            } catch (_: Exception) {}
         }
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Ultra-clean whisper status bar showing only essential context & 1-tap access to Special Menu
+        // Status bar showing active persona, pinned RAG count & battery telemetry
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -180,7 +166,7 @@ fun ChatStudioScreen(
                         modifier = Modifier.size(13.dp)
                     )
                     Text(
-                        text = "${uiState.activePersona?.name ?: "Eco Guide"} • ${uiState.pinnedRagDocuments.size} RAG pinned • ${uiState.telemetry.batteryPercent}% (${uiState.telemetry.instantaneousMilliwatts}mW)",
+                        text = "${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG pinned • ${uiState.telemetry.batteryPercent}%",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -200,7 +186,6 @@ fun ChatStudioScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // When NO model is downloaded or loaded, prominently instruct user to download
             if (uiState.activeModel == null) {
                 item(key = "no_model_warning_banner") {
                     Card(
@@ -222,20 +207,20 @@ fun ChatStudioScreen(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.CloudDownload,
+                                    imageVector = Icons.Default.FolderOpen,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onTertiaryContainer,
                                     modifier = Modifier.size(24.dp)
                                 )
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "No Local AI Model Downloaded",
+                                        text = "No Local AI Model Loaded",
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onTertiaryContainer
                                     )
                                     Text(
-                                        text = "Leafy is an offline Local AI Model Inference Application. Models are downloaded on demand from the Internet so the APK stays lightweight. Download a model to start local inference.",
+                                        text = "Load a local model weight file (.gguf, .pte, .tmac, or .bitnet) from your device storage to run 100% offline inference.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
                                     )
@@ -245,15 +230,15 @@ fun ChatStudioScreen(
                                 onClick = onNavigateToModels,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .testTag("download_model_cta_button")
+                                    .testTag("load_model_cta_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.CloudDownload,
+                                    imageVector = Icons.Default.FolderOpen,
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Browse & Download Models")
+                                Text("Load Local Model from Device")
                             }
                         }
                     }
@@ -285,14 +270,14 @@ fun ChatStudioScreen(
                                     modifier = Modifier.size(20.dp)
                                 )
                                 Text(
-                                    text = "${uiState.activeModel.name} Ready",
+                                    text = "${uiState.activeModel.name} Loaded",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
                             Text(
-                                text = "Model weights are loaded locally on your device (${uiState.activeModel.quantization}). All inference runs 100% offline with zero cloud telemetry. Type a prompt below to begin!",
+                                text = "Local weights (${uiState.activeModel.quantization}, ${uiState.activeModel.sizeMb} MB) are mounted for ${uiState.activeRuntime.displayName}. Type a message below to start offline inference.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -320,60 +305,12 @@ fun ChatStudioScreen(
                 )
             }
 
-            // Live Token Streaming Preview Card
             uiState.streamingPreview?.let { preview ->
                 item(key = "streaming_preview") {
                     StreamingAssistantCard(
                         preview = preview,
                         onStop = onStopStreaming
                     )
-                }
-            }
-        }
-
-        // Subtle Starter Suggestions when composer is empty
-        AnimatedVisibility(visible = promptInput.isEmpty() && uiState.streamingPreview == null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val quickPrompts = listOf(
-                    "Compare Bitnet 1.58-bit vs T-MAC",
-                    "Summarize pinned solar notes",
-                    "Quantized dot-product in Kotlin",
-                    "How much battery does Eco save?"
-                )
-                quickPrompts.forEachIndexed { idx, suggestion ->
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .clickable { onSendPrompt(suggestion) }
-                            .testTag("quick_prompt_chip_$idx"),
-                        shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.9f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Text(
-                                text = suggestion,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
                 }
             }
         }
@@ -398,7 +335,6 @@ fun ChatStudioScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // Special Tools / Context Launcher inside Composer
                     IconButton(
                         onClick = onOpenSpecialMenu,
                         modifier = Modifier
@@ -409,7 +345,7 @@ fun ChatStudioScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Tune,
-                            contentDescription = "Open special AI controls",
+                            contentDescription = "Open power mode & persona controls",
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(18.dp)
                         )
@@ -437,7 +373,6 @@ fun ChatStudioScreen(
                         )
                     )
 
-                    // Offline Voice Dictation Button
                     IconButton(
                         onClick = {
                             val hasAudioPerm = ContextCompat.checkSelfPermission(
@@ -454,9 +389,7 @@ fun ChatStudioScreen(
                                         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                                     }
                                     speechRecognizerLauncher.launch(intent)
-                                } catch (_: Exception) {
-                                    showVoiceQuickModal = true
-                                }
+                                } catch (_: Exception) {}
                             } else {
                                 audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
@@ -473,7 +406,6 @@ fun ChatStudioScreen(
                         )
                     }
 
-                    // Send Prompt Button
                     IconButton(
                         onClick = {
                             if (promptInput.isNotBlank()) {
@@ -510,7 +442,6 @@ fun ChatStudioScreen(
         }
     }
 
-    // Inline Edit & Branch Conversation Dialog
     editingMessageNode?.let { targetNode ->
         AlertDialog(
             onDismissRequest = { editingMessageNode = null },
@@ -530,7 +461,7 @@ fun ChatStudioScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "Editing this prompt forks a non-destructive branch using ${uiState.activeRuntime.displayName} (${uiState.activeModel?.name}).",
+                        text = "Editing this prompt forks a non-destructive branch using ${uiState.activeRuntime.displayName} (${uiState.activeModel?.name ?: "No model"}).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -564,55 +495,6 @@ fun ChatStudioScreen(
             }
         )
     }
-
-    // Offline Voice Dictation Quick Picker
-    if (showVoiceQuickModal) {
-        AlertDialog(
-            onDismissRequest = { showVoiceQuickModal = false },
-            title = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.GraphicEq,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Text("Offline Voice Dictation")
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Select a voice transcription or dictate a hands-free offline query:",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    val voiceSamples = listOf(
-                        "Explain how Bitnet 1.58-bit ternary weights save battery on mobile.",
-                        "What does my pinned off-grid solar note say about LiFePO4 battery capacity?",
-                        "Compare T-MAC lookup tables with ExecuTorch XNNPACK."
-                    )
-                    voiceSamples.forEach { transcript ->
-                        OutlinedButton(
-                            onClick = {
-                                promptInput = transcript
-                                showVoiceQuickModal = false
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(transcript, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showVoiceQuickModal = false }) {
-                    Text("Close")
-                }
-            }
-        )
-    }
 }
 
 @Composable
@@ -636,7 +518,6 @@ private fun BranchedMessageBubble(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
     ) {
-        // Clean Branch Switcher Pill (< 1/2 >)
         if (item.totalSiblings > 1) {
             Surface(
                 modifier = Modifier.padding(bottom = 5.dp),
@@ -715,13 +596,11 @@ private fun BranchedMessageBubble(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Message Content front-and-center (rich native Markdown rendering)
                 MarkdownText(
                     markdown = node.content,
                     isUser = isUser
                 )
 
-                // Expandable Telemetry & Cited RAG Drawer (keeps bubble clean until tapped)
                 AnimatedVisibility(visible = !isUser && showTelemetryAndRagDetails) {
                     Surface(
                         shape = RoundedCornerShape(14.dp),
@@ -770,7 +649,6 @@ private fun BranchedMessageBubble(
                     }
                 }
 
-                // Minimalist Action Bar
                 if (isUser) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -804,7 +682,6 @@ private fun BranchedMessageBubble(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Subtle compact pill: Runtime + t/s (tap to expand full telemetry & RAG info)
                         Row(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
@@ -842,7 +719,6 @@ private fun BranchedMessageBubble(
                             )
                         }
 
-                        // Compact Icon Actions: TTS Speak + Branch Regenerate
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)

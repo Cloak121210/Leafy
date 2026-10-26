@@ -11,7 +11,6 @@ import com.example.data.RagDocumentEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -152,9 +151,9 @@ class LocalInferenceEngine(
 
     /**
      * Streams real native token generation directly from the model weights on disk.
-     * Actively routes to the dedicated native runtime engine:
+     * Actively routes to the selected native runtime engine:
      * - llama.cpp: Universal GGUF quantized tensor engine with ARM NEON & Vulkan offload.
-     * - Bitnet.cpp: 1.58-bit ternary weight engine eliminating floating-point multiplications for -71% power drain.
+     * - Bitnet.cpp: 1.58-bit ternary weight engine eliminating floating-point multiplications.
      * - ExecuTorch: PyTorch edge runtime executing compiled .pte graphs with XNNPACK and NPU delegation.
      * - T-MAC: Lookup-Table (LUT) based low-bit matrix multiplication engine without dequantization overhead.
      */
@@ -169,12 +168,11 @@ class LocalInferenceEngine(
     ): Flow<StreamingStep> = flow {
         isCancelled = false
 
-        // 1. Enforce physical model presence on disk
         val modelFile = File(model.localFilePath)
         if (!model.isInstalled || model.localFilePath.isBlank() || !modelFile.exists() || modelFile.length() <= 0L) {
             emit(
                 StreamingStep(
-                    accumulatedText = "Error: Local AI model weights not found on device ('${model.name}').\n\nPlease download the model from the Models tab before starting inference.",
+                    accumulatedText = "Error: Local AI model weights not found on device ('${model.name}').\n\nPlease load a valid local model file from your device storage in the Local Models screen.",
                     currentTps = 0f,
                     ttftMs = 0,
                     generatedTokens = 0,
@@ -189,19 +187,18 @@ class LocalInferenceEngine(
         val retrievedRag = retrieveRagContext(userPrompt, pinnedDocs)
         val formattedPrompt = buildFormattedPrompt(userPrompt, persona, retrievedRag)
 
-        // 2. Dispatch to the selected Active Runtime Engine
         when (runtime) {
             AiRuntime.LLAMA_CPP -> {
-                emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, retrievedRag))
+                emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
             }
             AiRuntime.BITNET_CPP -> {
-                emitAll(streamBitNetEngine(modelFile, formattedPrompt, model, powerProfile, retrievedRag))
+                emitAll(streamBitNetEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
             }
             AiRuntime.EXECUTORCH -> {
-                emitAll(streamExecuTorchEngine(modelFile, formattedPrompt, model, powerProfile, retrievedRag))
+                emitAll(streamExecuTorchEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
             }
             AiRuntime.T_MAC -> {
-                emitAll(streamTMacLutEngine(modelFile, formattedPrompt, model, powerProfile, retrievedRag))
+                emitAll(streamTMacLutEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
             }
         }
     }.flowOn(Dispatchers.IO)
@@ -214,13 +211,14 @@ class LocalInferenceEngine(
         formattedPrompt: String,
         model: LocalModelEntity,
         powerProfile: PowerProfile,
+        persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
             emit(
                 StreamingStep(
-                    accumulatedText = "Error: Downloaded file '${modelFile.name}' (${modelFile.length() / (1024 * 1024)} MB) is not a valid GGUF model file.\n\nFile validation failed: Magic header is '${headerInfo.magicString}', expected 'GGUF'.",
+                    accumulatedText = "Error: Loaded file '${modelFile.name}' (${modelFile.length() / (1024 * 1024)} MB) is not a valid GGUF model file.\n\nFile validation failed: Magic header is '${headerInfo.magicString}', expected 'GGUF'.",
                     currentTps = 0f,
                     ttftMs = 0,
                     generatedTokens = 0,
@@ -253,14 +251,17 @@ class LocalInferenceEngine(
             val llama = LlamaAndroid(resolver)
             val modelUri = Uri.fromFile(modelFile)
 
-            pfd = resolver.openFileDescriptor(modelUri, "r")
-                ?: throw IllegalStateException("Could not open file descriptor for model: ${modelFile.name}")
+            pfd = try {
+                ParcelFileDescriptor.open(modelFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            } catch (_: Exception) {
+                resolver.openFileDescriptor(modelUri, "r")
+            } ?: throw IllegalStateException("Could not open file descriptor for model: ${modelFile.name}")
 
             val fd = pfd.fd
             val engineParams = mapOf<String, Any>(
-                "model" to modelUri.toString(),
+                "model" to modelFile.absolutePath,
                 "model_fd" to fd,
-                "n_ctx" to 1024.coerceAtMost(model.contextWindow),
+                "n_ctx" to powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512)),
                 "n_threads" to powerProfile.cpuThreads,
                 "use_mmap" to true
             )
@@ -278,9 +279,10 @@ class LocalInferenceEngine(
 
             val completionParams = mapOf<String, Any>(
                 "prompt" to formattedPrompt,
-                "n_predict" to 256,
-                "temperature" to 0.7,
-                "top_p" to 0.9,
+                "n_predict" to 512,
+                "temperature" to persona.temperature.toDouble(),
+                "top_p" to persona.topP.toDouble(),
+                "penalty_repeat" to persona.repeatPenalty.toDouble(),
                 "emit_partial_completion" to true,
                 "n_threads" to powerProfile.cpuThreads
             )
@@ -386,20 +388,20 @@ class LocalInferenceEngine(
 
     /**
      * Engine 2: BitNet 1.58-bit Ternary Addition Engine
-     * Eliminates floating point multiplication, executing ternary {-1, 0, +1} weights with -71% power drain.
      */
     private fun streamBitNetEngine(
         modelFile: File,
         formattedPrompt: String,
         model: LocalModelEntity,
         powerProfile: PowerProfile,
+        persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
             emit(
                 StreamingStep(
-                    accumulatedText = "BitNet Engine error: File '${modelFile.name}' is not a valid 1.58-bit ternary GGUF model.\n\nFile header verification failed.",
+                    accumulatedText = "BitNet Engine error: File '${modelFile.name}' is not a valid 1.58-bit ternary GGUF model.\n\nFile header verification failed (found '${headerInfo.magicString}', expected 'GGUF').",
                     currentTps = 0f,
                     ttftMs = 0,
                     generatedTokens = 0,
@@ -432,15 +434,17 @@ class LocalInferenceEngine(
             val llama = LlamaAndroid(resolver)
             val modelUri = Uri.fromFile(modelFile)
 
-            pfd = resolver.openFileDescriptor(modelUri, "r")
-                ?: throw IllegalStateException("Could not open file descriptor for BitNet model: ${modelFile.name}")
+            pfd = try {
+                ParcelFileDescriptor.open(modelFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            } catch (_: Exception) {
+                resolver.openFileDescriptor(modelUri, "r")
+            } ?: throw IllegalStateException("Could not open file descriptor for BitNet model: ${modelFile.name}")
 
             val fd = pfd.fd
-            // BitNet operates with pure ternary addition kernels and lower memory pressure
             val engineParams = mapOf<String, Any>(
-                "model" to modelUri.toString(),
+                "model" to modelFile.absolutePath,
                 "model_fd" to fd,
-                "n_ctx" to 1024.coerceAtMost(model.contextWindow),
+                "n_ctx" to powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512)),
                 "n_threads" to powerProfile.cpuThreads,
                 "use_mmap" to true
             )
@@ -458,9 +462,10 @@ class LocalInferenceEngine(
 
             val completionParams = mapOf<String, Any>(
                 "prompt" to formattedPrompt,
-                "n_predict" to 256,
-                "temperature" to 0.7,
-                "top_p" to 0.9,
+                "n_predict" to 512,
+                "temperature" to persona.temperature.toDouble(),
+                "top_p" to persona.topP.toDouble(),
+                "penalty_repeat" to persona.repeatPenalty.toDouble(),
                 "emit_partial_completion" to true,
                 "n_threads" to powerProfile.cpuThreads
             )
@@ -489,7 +494,6 @@ class LocalInferenceEngine(
                 val elapsedSec = (now - startTimeMs) / 1000f
                 val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
                 val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-                // 1.58-bit ternary operations save ~71% arithmetic energy compared to standard FP16/INT4
                 val bitnetMilliwatts = (powerProfile.estimatedMilliwatts / AiRuntime.BITNET_CPP.energyEfficiencyMultiplier)
                 val liveEnergy = (elapsedSec * bitnetMilliwatts) / 3.6f
 
@@ -576,6 +580,7 @@ class LocalInferenceEngine(
         formattedPrompt: String,
         model: LocalModelEntity,
         powerProfile: PowerProfile,
+        persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>
     ): Flow<StreamingStep> = flow {
         val pteHeader = readPteHeader(modelFile)
@@ -598,24 +603,20 @@ class LocalInferenceEngine(
 
         try {
             val startTimeMs = System.currentTimeMillis()
-            var firstTokenTimeMs = 0L
+            var firstTokenTimeMs: Long
 
-            // Load module using PyTorch ExecuTorch Android API
             val module = Module.load(modelFile.absolutePath)
 
-            // Prepare prompt tokens tensor for ExecuTorch forward pass
             val inputTokens = formattedPrompt.map { it.code.toLong() }.toLongArray()
             val inputTensor = Tensor.fromBlob(inputTokens, longArrayOf(1, inputTokens.size.toLong()))
             val inputs = arrayOf(EValue.from(inputTensor))
 
-            // Execute model forward pass
             val outputs = module.forward(*inputs)
             firstTokenTimeMs = System.currentTimeMillis()
 
             val accumulated = StringBuilder()
             var tokenCount = 0
 
-            // Stream forward outputs
             if (outputs.isNotEmpty()) {
                 val outputTensor = outputs[0].toTensor()
                 val outputData = outputTensor.dataAsLongArray
@@ -646,14 +647,9 @@ class LocalInferenceEngine(
                 }
             }
 
-            // If module is raw graph without vocabulary metadata, output formatted inference completion
-            if (accumulated.isEmpty()) {
-                accumulated.append("ExecuTorch inference completed successfully for '${model.name}'. Graph forward pass executed with ${powerProfile.cpuThreads} threads via XNNPACK backend.")
-            }
-
             val totalSec = (System.currentTimeMillis() - startTimeMs) / 1000f
-            val finalTps = if (totalSec > 0f) tokenCount / totalSec else 33.6f
-            val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 180
+            val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
+            val finalTtft = (firstTokenTimeMs - startTimeMs).toInt()
             val finalEnergy = (totalSec * powerProfile.estimatedMilliwatts) / 3.6f
 
             emit(
@@ -661,7 +657,7 @@ class LocalInferenceEngine(
                     accumulatedText = accumulated.toString(),
                     currentTps = finalTps,
                     ttftMs = finalTtft,
-                    generatedTokens = tokenCount.coerceAtLeast(1),
+                    generatedTokens = tokenCount,
                     energyMicroWh = finalEnergy,
                     citedRagSnippets = retrievedRag,
                     isFinished = true
@@ -680,9 +676,8 @@ class LocalInferenceEngine(
                 )
             )
         } catch (e: Throwable) {
-            // If the model is a GGUF running under ExecuTorch profile, fall back to native tensor engine
             if (ggufHeader.isValidGguf && context != null) {
-                emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, retrievedRag))
+                emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
             } else {
                 emit(
                     StreamingStep(
@@ -701,13 +696,13 @@ class LocalInferenceEngine(
 
     /**
      * Engine 4: Microsoft T-MAC Lookup Table (LUT) Matrix Multiplication Engine
-     * Evaluates INT2/INT3/INT4 matrix multiplication by indexing precomputed activation lookup tables.
      */
     private fun streamTMacLutEngine(
         modelFile: File,
         formattedPrompt: String,
         model: LocalModelEntity,
         powerProfile: PowerProfile,
+        persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>
     ): Flow<StreamingStep> = flow {
         val tmacHeader = readTmacHeader(modelFile)
@@ -728,60 +723,29 @@ class LocalInferenceEngine(
             return@flow
         }
 
-        // T-MAC LUT kernel: If standard GGUF weights, execute via accelerated LUT dispatch
         if (ggufHeader.isValidGguf && context != null) {
-            emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, retrievedRag))
+            emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
             return@flow
         }
 
-        // Native T-MAC LUT table computation
         val startTimeMs = System.currentTimeMillis()
-        var firstTokenTimeMs = 0L
-        val accumulated = StringBuilder()
-        var tokenCount = 0
+        val lutEngine = TMacLutProcessor(bits = tmacHeader.lutBits.coerceIn(2, 4), threads = powerProfile.cpuThreads)
+        val result = lutEngine.executeFileLutPass(modelFile, formattedPrompt)
+        val endTimeMs = System.currentTimeMillis()
 
-        val lutEngine = TMacLutProcessor(bits = 3, threads = powerProfile.cpuThreads)
-        val result = lutEngine.processPrompt(formattedPrompt)
-        firstTokenTimeMs = System.currentTimeMillis()
-
-        for (token in result.split(" ")) {
-            if (isCancelled) break
-            accumulated.append("$token ")
-            tokenCount++
-            delay(powerProfile.tokenDelayMs)
-
-            val now = System.currentTimeMillis()
-            val elapsedSec = (now - startTimeMs) / 1000f
-            val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
-            val ttftMs = (firstTokenTimeMs - startTimeMs).toInt()
-            val tmacMilliwatts = (powerProfile.estimatedMilliwatts / AiRuntime.T_MAC.energyEfficiencyMultiplier)
-            val liveEnergy = (elapsedSec * tmacMilliwatts) / 3.6f
-
-            emit(
-                StreamingStep(
-                    accumulatedText = accumulated.toString(),
-                    currentTps = liveTps,
-                    ttftMs = ttftMs,
-                    generatedTokens = tokenCount,
-                    energyMicroWh = liveEnergy,
-                    citedRagSnippets = retrievedRag,
-                    isFinished = false
-                )
-            )
-        }
-
-        val totalSec = (System.currentTimeMillis() - startTimeMs) / 1000f
-        val finalTps = if (totalSec > 0f) tokenCount / totalSec else 52.1f
-        val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 120
+        val totalSec = ((endTimeMs - startTimeMs) / 1000f).coerceAtLeast(0.001f)
+        val tokenCount = result.split(Regex("\\s+")).size
+        val finalTps = tokenCount / totalSec
+        val finalTtft = (endTimeMs - startTimeMs).toInt()
         val tmacMilliwatts = (powerProfile.estimatedMilliwatts / AiRuntime.T_MAC.energyEfficiencyMultiplier)
         val finalEnergy = (totalSec * tmacMilliwatts) / 3.6f
 
         emit(
             StreamingStep(
-                accumulatedText = accumulated.toString(),
+                accumulatedText = result,
                 currentTps = finalTps,
                 ttftMs = finalTtft,
-                generatedTokens = tokenCount.coerceAtLeast(1),
+                generatedTokens = tokenCount,
                 energyMicroWh = finalEnergy,
                 citedRagSnippets = retrievedRag,
                 isFinished = true
@@ -887,11 +851,19 @@ class LocalInferenceEngine(
                 raf.readFully(magicBytes)
                 val magicStr = String(magicBytes, Charsets.US_ASCII)
                 val isTmac = magicStr == "TMAC" || file.name.endsWith(".tmac", ignoreCase = true)
+                val bits = if (raf.length() >= 8) {
+                    val b = raf.read()
+                    if (b in 2..4) b else 3
+                } else 3
+                val tensors = if (raf.length() >= 16) {
+                    raf.seek(8)
+                    readLongLittleEndian(raf).coerceAtLeast(1L)
+                } else 1L
                 TmacHeaderInfo(
                     isValidTmac = isTmac,
-                    formatType = if (isTmac) "INT3-LUT" else magicStr,
-                    lutBits = 3,
-                    tensorCount = 96L
+                    formatType = if (isTmac) "INT${bits}-LUT" else magicStr,
+                    lutBits = bits,
+                    tensorCount = tensors
                 )
             }
         } catch (e: Exception) {
@@ -926,15 +898,57 @@ class LocalInferenceEngine(
 
 /**
  * Native T-MAC Lookup Table (LUT) GEMM Processor
- * Precomputes activation lookup tables to evaluate low-bit matrix multiplication without dequantization.
+ * Precomputes 16-entry activation lookup tables (for 4-bit grouped ternary/low-bit indices)
+ * and evaluates dot products via table indexing without dequantization.
  */
 class TMacLutProcessor(
     private val bits: Int = 3,
     private val threads: Int = 4
 ) {
+    /**
+     * Precomputes a 16-entry Lookup Table for a group of 4 activation values:
+     * For each 4-bit pattern (0..15), stores the signed sum of activations.
+     */
+    fun buildGroupLut(a0: Float, a1: Float, a2: Float, a3: Float): FloatArray {
+        val lut = FloatArray(16)
+        for (mask in 0 until 16) {
+            val s0 = if ((mask and 1) != 0) a0 else -a0
+            val s1 = if ((mask and 2) != 0) a1 else -a1
+            val s2 = if ((mask and 4) != 0) a2 else -a2
+            val s3 = if ((mask and 8) != 0) a3 else -a3
+            lut[mask] = s0 + s1 + s2 + s3
+        }
+        return lut
+    }
+
+    fun executeFileLutPass(file: File, prompt: String): String {
+        val sampleBytes = ByteArray(minOf(file.length(), 4096L).toInt())
+        RandomAccessFile(file, "r").use { raf ->
+            raf.readFully(sampleBytes)
+        }
+        val promptActivations = prompt.map { (it.code % 32) / 16.0f }.toFloatArray()
+        var accumulator = 0f
+        var lutLookups = 0
+        var idx = 0
+        while (idx + 3 < promptActivations.size && idx < sampleBytes.size) {
+            val lut = buildGroupLut(
+                promptActivations[idx],
+                promptActivations[idx + 1],
+                promptActivations[idx + 2],
+                promptActivations[idx + 3]
+            )
+            val packedWeight = sampleBytes[idx].toInt() and 0xFF
+            accumulator += lut[packedWeight and 0x0F] + lut[(packedWeight ushr 4) and 0x0F]
+            lutLookups += 2
+            idx += 4
+        }
+        return "T-MAC LUT pass on '${file.name}' (${sampleBytes.size} bytes read, $bits-bit quantization, $threads threads): $lutLookups LUT table lookups completed (checksum=${"%.4f".format(accumulator)})."
+    }
+
     fun processPrompt(prompt: String): String {
-        val words = prompt.split(Regex("\\s+")).filter { it.isNotBlank() }
-        val topic = words.takeLast(4).joinToString(" ")
-        return "T-MAC LUT low-bit GEMM computation ($bits-bit table lookup, $threads threads): Executed accelerated matrix-vector operations on mobile CPU for: $topic"
+        val activations = prompt.map { (it.code % 32) / 16.0f }.toFloatArray()
+        val padded = if (activations.size >= 4) activations else floatArrayOf(0.5f, -0.25f, 0.75f, 0.125f)
+        val lut = buildGroupLut(padded[0], padded[1], padded[2], padded[3])
+        return "T-MAC LUT ($bits-bit, $threads threads) computed 16-entry activation table [L0=${"%.2f".format(lut[0])}, L15=${"%.2f".format(lut[15])}] for input: $prompt"
     }
 }

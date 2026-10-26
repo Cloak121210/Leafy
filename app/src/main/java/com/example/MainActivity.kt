@@ -7,9 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,11 +24,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.ChatBubbleOutline
@@ -38,10 +36,10 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.EnergySavingsLeaf
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FontDownload
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.PersonPin
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
@@ -50,7 +48,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -87,10 +84,12 @@ import com.example.ui.components.OrganicLeafBackground
 import com.example.ui.components.PowerProfilePill
 import com.example.ui.components.RuntimeBadgePill
 import com.example.ui.components.powerProfileAccentColor
+import com.example.ui.components.runtimeAccentColor
 import com.example.ui.screens.ChatStudioScreen
 import com.example.ui.screens.EcoAndSettingsScreen
 import com.example.ui.screens.KnowledgeAndPersonasScreen
-import com.example.ui.screens.ModelsAndRuntimesScreen
+import com.example.ui.screens.LocalModelsScreen
+import com.example.ui.screens.RuntimesScreen
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.LeafyTheme
 import com.example.viewmodel.LeafyTab
@@ -132,9 +131,9 @@ fun LeafyAppShell(
     val scope = rememberCoroutineScope()
 
     var showModelSwitcherSheet by remember { mutableStateOf(false) }
+    var showRuntimeSwitcherSheet by remember { mutableStateOf(false) }
     var showSpecialCommandMenu by remember { mutableStateOf(false) }
 
-    // Return to front-and-center CHAT screen when pressing Back on any special screen
     BackHandler(enabled = uiState.currentTab != LeafyTab.CHAT) {
         viewModel.selectTab(LeafyTab.CHAT)
     }
@@ -168,9 +167,10 @@ fun LeafyAppShell(
             topBar = {
                 val secondaryTitle = when (uiState.currentTab) {
                     LeafyTab.CHAT -> "Leafy"
-                    LeafyTab.MODELS -> "Models & Runtimes Vault"
+                    LeafyTab.MODELS -> "Local Models"
+                    LeafyTab.RUNTIMES -> "Inference Runtimes"
                     LeafyTab.KNOWLEDGE -> "Local RAG & Persona Studio"
-                    LeafyTab.ECO_SETTINGS -> "Eco Telemetry & Settings"
+                    LeafyTab.ECO_SETTINGS -> "Power Modes & Telemetry"
                 }
 
                 LeafyCleanTopBar(
@@ -187,6 +187,7 @@ fun LeafyAppShell(
                         viewModel.selectTab(LeafyTab.CHAT)
                     },
                     onOpenModelSwitcher = { showModelSwitcherSheet = true },
+                    onOpenRuntimeSwitcher = { showRuntimeSwitcherSheet = true },
                     onOpenSpecialCommandMenu = { showSpecialCommandMenu = true },
                     onOpenSettingsScreen = {
                         viewModel.selectTab(LeafyTab.ECO_SETTINGS)
@@ -216,19 +217,20 @@ fun LeafyAppShell(
                             onNavigateToModels = { viewModel.selectTab(LeafyTab.MODELS) }
                         )
 
-                        LeafyTab.MODELS -> ModelsAndRuntimesScreen(
+                        LeafyTab.MODELS -> LocalModelsScreen(
                             uiState = uiState,
                             onActivateModel = { model ->
                                 viewModel.switchModelAndRuntime(model)
                                 viewModel.selectTab(LeafyTab.CHAT)
                             },
-                            onStartDownload = viewModel::startModelDownload,
-                            onCancelDownload = viewModel::cancelModelDownload,
-                            onDeleteDownloadedModel = viewModel::deleteDownloadedModel,
-                            onSelectRuntime = viewModel::switchRuntimeOnly,
+                            onDeleteLoadedModel = viewModel::deleteDownloadedModel,
                             onImportModelUri = viewModel::importLocalModelFromUri,
-                            onImportCustomModelManual = viewModel::importCustomModelManual,
-                            onDownloadCustomUrl = viewModel::downloadCustomModelFromUrl
+                            onScanDeviceModels = { viewModel.scanDeviceForLocalModels(silent = false) }
+                        )
+
+                        LeafyTab.RUNTIMES -> RuntimesScreen(
+                            uiState = uiState,
+                            onSelectRuntime = viewModel::switchRuntimeOnly
                         )
 
                         LeafyTab.KNOWLEDGE -> KnowledgeAndPersonasScreen(
@@ -254,20 +256,17 @@ fun LeafyAppShell(
         }
     }
 
-    // 1. Special Botanical Bento Command Menu Sheet (Quick access to Power Profiles, Personas, RAG Pins, Font & Screens)
+    // 1. Power Modes & Studio Controls Sheet (Strictly for Power Modes, Persona, RAG & Typography — NO Runtimes!)
     if (showSpecialCommandMenu) {
         ModalBottomSheet(
             onDismissRequest = { showSpecialCommandMenu = false },
             containerColor = MaterialTheme.colorScheme.surface
         ) {
-            LeafySpecialBentoMenuSheet(
+            LeafyPowerModesAndStudioSheet(
                 uiState = uiState,
                 onSelectPowerProfile = viewModel::setPowerProfile,
-                onSelectRuntime = viewModel::switchRuntimeOnly,
                 onSelectPersona = viewModel::selectPersona,
-                onTogglePinDoc = viewModel::togglePinRagDocument,
                 onToggleComicSans = viewModel::toggleComicSans,
-                onToggleDarkTheme = viewModel::toggleDarkTheme,
                 onOpenFullScreen = { tab ->
                     showSpecialCommandMenu = false
                     viewModel.selectTab(tab)
@@ -276,7 +275,7 @@ fun LeafyAppShell(
         }
     }
 
-    // 2. Quick Model & Runtime Switcher Bottom Sheet (PocketPal style)
+    // 2. Dedicated Local Model Switcher Sheet (Strictly for Local Models — NO Runtimes!)
     if (showModelSwitcherSheet) {
         ModalBottomSheet(
             onDismissRequest = { showModelSwitcherSheet = false },
@@ -295,11 +294,11 @@ fun LeafyAppShell(
                 ) {
                     Column {
                         Text(
-                            text = "Switch Local Model & Runtime",
+                            text = "Switch Local Model",
                             style = MaterialTheme.typography.titleLarge
                         )
                         Text(
-                            text = "Swap active engine or quantized weights mid-chat",
+                            text = "Select a loaded model file on your device",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -311,116 +310,109 @@ fun LeafyAppShell(
                         },
                         modifier = Modifier.testTag("sheet_open_model_hub_button")
                     ) {
-                        Text("Model Vault")
+                        Text("Load Models")
                     }
                 }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    AiRuntime.entries.forEach { rt ->
-                        FilterChip(
-                            selected = uiState.activeRuntime == rt,
-                            onClick = { viewModel.switchRuntimeOnly(rt) },
-                            label = { Text(rt.displayName) }
+                if (uiState.localModels.isEmpty()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                         )
-                    }
-                }
-
-                LazyColumn(
-                    modifier = Modifier.height(310.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(
-                        items = uiState.localModels,
-                        key = { "sheet_${it.id}" }
-                    ) { model ->
-                        val isCurrent = uiState.activeModel?.id == model.id
-                        Card(
+                    ) {
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    if (model.isInstalled) {
-                                        viewModel.switchModelAndRuntime(model)
-                                        showModelSwitcherSheet = false
-                                    } else {
-                                        showModelSwitcherSheet = false
-                                        viewModel.selectTab(LeafyTab.MODELS)
-                                    }
-                                }
-                                .testTag("sheet_model_item_${model.id}"),
-                            shape = RoundedCornerShape(18.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isCurrent) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerLow
-                                }
-                            ),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                            )
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(
+                            Text(
+                                text = "No local model files loaded yet",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Open the Local Models screen to select a .gguf, .pte, or .tmac file from your device storage.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Button(
+                                onClick = {
+                                    showModelSwitcherSheet = false
+                                    viewModel.selectTab(LeafyTab.MODELS)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FolderOpen,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Load Local Model File")
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.height(280.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(
+                            items = uiState.localModels,
+                            key = { "sheet_${it.id}" }
+                        ) { model ->
+                            val isCurrent = uiState.activeModel?.id == model.id
+                            Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .clickable {
+                                        viewModel.switchModelAndRuntime(model)
+                                        showModelSwitcherSheet = false
+                                    }
+                                    .testTag("sheet_model_item_${model.id}"),
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isCurrent) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerLow
+                                    }
+                                ),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                                )
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        RuntimeBadgePill(runtime = AiRuntime.fromId(model.runtimeId))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "${model.sizeMb} MB",
+                                            text = model.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "${model.quantization} • ${model.sizeMb} MB • Verified on Disk",
                                             style = MaterialTheme.typography.labelSmall.copy(
                                                 fontFamily = JetBrainsMonoFontFamily
-                                            )
+                                            ),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
-                                        if (model.isInstalled) {
-                                            Text(
-                                                text = "• Downloaded",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
                                     }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = model.name,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "${model.quantization} • ~${"%.1f".format(model.expectedTps)} t/s",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
 
-                                if (isCurrent) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = "Active",
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                } else if (!model.isInstalled) {
-                                    Surface(
-                                        shape = RoundedCornerShape(50),
-                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-                                    ) {
-                                        Text(
-                                            text = "Download",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    if (isCurrent) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = "Active",
+                                            tint = MaterialTheme.colorScheme.primary
                                         )
                                     }
                                 }
@@ -433,10 +425,101 @@ fun LeafyAppShell(
             }
         }
     }
+
+    // 3. Dedicated Inference Runtime Switcher Sheet (Strictly for Runtimes — NO Models or Power Modes!)
+    if (showRuntimeSwitcherSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showRuntimeSwitcherSheet = false },
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Inference Runtimes",
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                        Text(
+                            text = "Select the active on-device execution engine",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showRuntimeSwitcherSheet = false
+                            viewModel.selectTab(LeafyTab.RUNTIMES)
+                        },
+                        modifier = Modifier.testTag("sheet_open_runtimes_screen_button")
+                    ) {
+                        Text("Runtimes Hub")
+                    }
+                }
+
+                AiRuntime.entries.forEach { runtime ->
+                    val isSelected = uiState.activeRuntime == runtime
+                    val accent = runtimeAccentColor(runtime)
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                viewModel.switchRuntimeOnly(runtime)
+                                showRuntimeSwitcherSheet = false
+                            }
+                            .testTag("sheet_runtime_${runtime.name.lowercase()}"),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isSelected) accent.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerLow
+                        ),
+                        border = BorderStroke(
+                            if (isSelected) 2.dp else 1.dp,
+                            if (isSelected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                RuntimeBadgePill(runtime = runtime)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = runtime.architectureNote,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = "Active runtime",
+                                    tint = accent
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+        }
+    }
 }
 
 /**
- * Left Botanical Canopy Drawer: Houses Conversation Threads, Special Workspace Screens, and Quick Eco Status.
+ * Left Botanical Canopy Drawer: Separate dedicated items for Local Models, Inference Runtimes, RAG & Personas, and Power Modes & Settings.
  */
 @Composable
 private fun LeafyCanopyNavigationDrawer(
@@ -460,9 +543,8 @@ private fun LeafyCanopyNavigationDrawer(
         ) {
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Brand Header + Eco Status Card
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -505,7 +587,6 @@ private fun LeafyCanopyNavigationDrawer(
                     )
                 }
 
-                // New Thread Action
                 Button(
                     onClick = onNewConversation,
                     modifier = Modifier
@@ -522,40 +603,46 @@ private fun LeafyCanopyNavigationDrawer(
                     Text("New Offline Conversation")
                 }
 
-                // Special Menus & Dedicated Studio Screens
                 Text(
-                    text = "SPECIAL WORKSPACES & SETTINGS",
+                    text = "WORKSPACES & ENGINES",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 DrawerWorkspaceCard(
-                    icon = Icons.Default.Memory,
-                    title = "Models & Runtimes Vault",
-                    subtitle = "llama.cpp, Bitnet.cpp, T-MAC, ExecuTorch & Import",
+                    icon = Icons.Default.FolderOpen,
+                    title = "Local Models",
+                    subtitle = "${uiState.localModels.size} model(s) loaded from device storage",
                     onClick = { onNavigateToScreen(LeafyTab.MODELS) },
                     testTag = "drawer_nav_models"
                 )
 
                 DrawerWorkspaceCard(
-                    icon = Icons.Default.MenuBook,
+                    icon = Icons.Default.Memory,
+                    title = "Inference Runtimes",
+                    subtitle = "Active: ${uiState.activeRuntime.displayName} (llama.cpp, Bitnet, T-MAC, ExecuTorch)",
+                    onClick = { onNavigateToScreen(LeafyTab.RUNTIMES) },
+                    testTag = "drawer_nav_runtimes"
+                )
+
+                DrawerWorkspaceCard(
+                    icon = Icons.AutoMirrored.Filled.MenuBook,
                     title = "RAG Knowledge & Personas",
-                    subtitle = "${uiState.pinnedRagDocuments.size} docs pinned • ${uiState.activePersona?.name ?: "Eco Guide"}",
+                    subtitle = "${uiState.pinnedRagDocuments.size} docs pinned • ${uiState.activePersona?.name ?: "Leafy Assistant"}",
                     onClick = { onNavigateToScreen(LeafyTab.KNOWLEDGE) },
                     testTag = "drawer_nav_knowledge"
                 )
 
                 DrawerWorkspaceCard(
                     icon = Icons.Default.Settings,
-                    title = "Eco Telemetry & Settings",
-                    subtitle = "Power profiles, Comic Sans font & privacy wipe",
+                    title = "Power Modes & Telemetry",
+                    subtitle = "${uiState.powerProfile.displayName} • Typography & privacy wipe",
                     onClick = { onNavigateToScreen(LeafyTab.ECO_SETTINGS) },
                     testTag = "drawer_nav_eco_settings"
                 )
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                // Conversation Threads List
                 Text(
                     text = "RECENT OFFLINE THREADS",
                     style = MaterialTheme.typography.labelSmall,
@@ -635,7 +722,6 @@ private fun LeafyCanopyNavigationDrawer(
                 }
             }
 
-            // Bottom Quick Toggles inside Drawer (Comic Sans + Dark Canopy)
             Surface(
                 shape = RoundedCornerShape(18.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -707,7 +793,7 @@ private fun DrawerWorkspaceCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -717,7 +803,7 @@ private fun DrawerWorkspaceCard(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Surface(
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(34.dp),
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.primaryContainer
                 ) {
@@ -754,19 +840,16 @@ private fun DrawerWorkspaceCard(
 }
 
 /**
- * Special Botanical Bento Command Menu Sheet:
- * Provides quick radial/bento controls for Runtimes, Power Profiles, Personas, RAG Context Pinning,
- * Comic Sans typography, and deep-links to the dedicated full screens.
+ * Power Modes & Studio Controls Sheet:
+ * Strictly for Power Modes (Eco / Balanced / Turbo), Persona, RAG Context, and Typography.
+ * Runtimes and Models have their own separate menus.
  */
 @Composable
-private fun LeafySpecialBentoMenuSheet(
+private fun LeafyPowerModesAndStudioSheet(
     uiState: LeafyUiState,
     onSelectPowerProfile: (PowerProfile) -> Unit,
-    onSelectRuntime: (AiRuntime) -> Unit,
     onSelectPersona: (com.example.data.PersonaPresetEntity) -> Unit,
-    onTogglePinDoc: (com.example.data.RagDocumentEntity) -> Unit,
     onToggleComicSans: () -> Unit,
-    onToggleDarkTheme: () -> Unit,
     onOpenFullScreen: (LeafyTab) -> Unit
 ) {
     Column(
@@ -775,7 +858,6 @@ private fun LeafySpecialBentoMenuSheet(
             .padding(horizontal = 18.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Header + Live Eco Telemetry Pill
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -783,11 +865,11 @@ private fun LeafySpecialBentoMenuSheet(
         ) {
             Column {
                 Text(
-                    text = "Leafy Studio Controls",
+                    text = "Power Modes & Studio Controls",
                     style = MaterialTheme.typography.titleLarge
                 )
                 Text(
-                    text = "Instant offline runtime, power, persona & RAG tuning",
+                    text = "Offline thermal modes, persona & RAG tuning",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -809,7 +891,7 @@ private fun LeafySpecialBentoMenuSheet(
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
-                        text = "${uiState.telemetry.batteryPercent}% • ~${uiState.telemetry.instantaneousMilliwatts}mW",
+                        text = "${uiState.telemetry.batteryPercent}% • ${uiState.telemetry.batteryTempCelsius}°C",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFamily = JetBrainsMonoFontFamily,
                             fontWeight = FontWeight.Bold
@@ -820,10 +902,10 @@ private fun LeafySpecialBentoMenuSheet(
             }
         }
 
-        // 1. Preset Power Profile Bento Row
+        // 1. Preset Power Modes Row
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Power & Thermal Profile",
+                text = "Power & Thermal Mode",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -869,51 +951,11 @@ private fun LeafySpecialBentoMenuSheet(
             }
         }
 
-        // 2. Quick Runtime Engine Selector
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Active Inference Runtime",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "Open Model Vault →",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .clickable { onOpenFullScreen(LeafyTab.MODELS) }
-                        .testTag("menu_open_models_vault")
-                )
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                AiRuntime.entries.forEach { runtime ->
-                    FilterChip(
-                        selected = uiState.activeRuntime == runtime,
-                        onClick = { onSelectRuntime(runtime) },
-                        label = { Text("${runtime.displayName} (${runtime.defaultQuantization})") },
-                        modifier = Modifier.testTag("menu_runtime_${runtime.name.lowercase()}")
-                    )
-                }
-            }
-        }
-
-        // 3. Persona & Pinned RAG Quick Row
+        // 2. Persona & Pinned RAG Quick Row
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Active Persona Card
             Surface(
                 modifier = Modifier
                     .weight(1f)
@@ -950,7 +992,7 @@ private fun LeafySpecialBentoMenuSheet(
                         )
                     }
                     Text(
-                        text = uiState.activePersona?.name ?: "Leafy Eco Guide",
+                        text = uiState.activePersona?.name ?: "Leafy Assistant",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                         maxLines = 1,
@@ -964,7 +1006,6 @@ private fun LeafySpecialBentoMenuSheet(
                 }
             }
 
-            // Local RAG Context Card
             Surface(
                 modifier = Modifier
                     .weight(1f)
@@ -1008,7 +1049,7 @@ private fun LeafySpecialBentoMenuSheet(
             }
         }
 
-        // 4. Typography (Comic Sans vs Rounded Sans) & Full Settings Bar
+        // 3. Typography Toggle
         Surface(
             shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -1051,30 +1092,17 @@ private fun LeafySpecialBentoMenuSheet(
             }
         }
 
-        // 5. Full Screen Launchers Row
+        // 4. Dedicated Screen Launchers
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedButton(
-                onClick = { onOpenFullScreen(LeafyTab.MODELS) },
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Memory,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Models")
-            }
-
-            OutlinedButton(
                 onClick = { onOpenFullScreen(LeafyTab.KNOWLEDGE) },
                 modifier = Modifier.weight(1f)
             ) {
                 Icon(
-                    imageVector = Icons.Default.MenuBook,
+                    imageVector = Icons.AutoMirrored.Filled.MenuBook,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp)
                 )
@@ -1092,7 +1120,7 @@ private fun LeafySpecialBentoMenuSheet(
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Settings")
+                Text("Power & Telemetry")
             }
         }
 

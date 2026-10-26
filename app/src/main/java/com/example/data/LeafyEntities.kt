@@ -57,7 +57,7 @@ enum class AiRuntime(
     companion object {
         fun fromId(id: String): AiRuntime =
             entries.find { it.id.equals(id, ignoreCase = true) || it.name.equals(id, ignoreCase = true) }
-                ?: BITNET_CPP
+                ?: LLAMA_CPP
     }
 }
 
@@ -69,40 +69,36 @@ enum class PowerProfile(
     val cpuThreads: Int,
     val contextLimit: Int,
     val kvCacheBits: String,
-    val tokenDelayMs: Long,
     val estimatedMilliwatts: Int
 ) {
     ECO(
         id = "ECO",
         displayName = "Eco Leaf",
-        badgeText = "Eco • -62% Drain",
-        description = "Pins execution to efficiency cores, uses INT4 KV-cache quantization, and caps thermal envelope under 34°C.",
+        badgeText = "Eco • 2 Threads",
+        description = "Pins execution to efficiency cores, uses INT4 KV-cache quantization, and caps thermal envelope.",
         cpuThreads = 2,
         contextLimit = 2048,
         kvCacheBits = "Q4_0 KV",
-        tokenDelayMs = 26L,
         estimatedMilliwatts = 680
     ),
     BALANCED(
         id = "BALANCED",
         displayName = "Balanced Canopy",
-        badgeText = "Balanced • Adaptive",
-        description = "Dynamically scales 4 big.LITTLE threads with Q8_0 KV-cache for crisp responsiveness and cool sustained chat.",
+        badgeText = "Balanced • 4 Threads",
+        description = "Dynamically scales 4 big.LITTLE threads with Q8_0 KV-cache for responsive sustained local chat.",
         cpuThreads = 4,
         contextLimit = 4096,
         kvCacheBits = "Q8_0 KV",
-        tokenDelayMs = 16L,
         estimatedMilliwatts = 1240
     ),
     PERFORMANCE(
         id = "PERFORMANCE",
         displayName = "Sunburst Turbo",
-        badgeText = "Turbo • Max t/s",
+        badgeText = "Turbo • 8 Threads",
         description = "Unlocks 8 performance threads, SIMD/NPU acceleration, and full 8K context window for heavy RAG & coding.",
         cpuThreads = 8,
         contextLimit = 8192,
         kvCacheBits = "FP16 KV",
-        tokenDelayMs = 9L,
         estimatedMilliwatts = 2350
     );
 
@@ -131,9 +127,9 @@ data class MessageNodeEntity(
     val role: String, // "USER" or "ASSISTANT"
     val content: String,
     val timestamp: Long = System.currentTimeMillis(),
-    val runtimeId: String = AiRuntime.BITNET_CPP.id,
-    val modelName: String = "Leafy-BitNet-b1.58-2B",
-    val quantization: String = "1.58-bit i2_s",
+    val runtimeId: String = AiRuntime.LLAMA_CPP.id,
+    val modelName: String = "",
+    val quantization: String = "",
     val powerProfileId: String = PowerProfile.ECO.id,
     val tokensPerSec: Float = 0f,
     val ttftMs: Int = 0,
@@ -158,15 +154,10 @@ data class LocalModelEntity(
     val ecoRating: Int, // 1..5 leaves
     val specialty: String,
     val isInstalled: Boolean,
-    val isUserImported: Boolean = false,
+    val isUserImported: Boolean = true,
     val localFilePath: String = "",
     val sha256Short: String = "",
-    val downloadUrl: String = "",
-    val isDownloading: Boolean = false,
-    val downloadProgress: Float = 0f,
-    val downloadedBytes: Long = 0L,
-    val totalBytes: Long = 0L,
-    val downloadSpeedMb: Float = 0f
+    val fileSizeBytes: Long = 0L
 )
 
 @Entity(tableName = "rag_documents")

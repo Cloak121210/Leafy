@@ -46,7 +46,7 @@ interface LeafyDao {
     suspend fun deleteMessagesForConversation(conversationId: Long)
 
     // Local Models
-    @Query("SELECT * FROM local_models ORDER BY isInstalled DESC, ecoRating DESC, sizeMb ASC")
+    @Query("SELECT * FROM local_models ORDER BY isInstalled DESC, sizeMb ASC")
     fun observeLocalModels(): Flow<List<LocalModelEntity>>
 
     @Query("SELECT COUNT(*) FROM local_models")
@@ -63,6 +63,9 @@ interface LeafyDao {
 
     @Query("DELETE FROM local_models WHERE id = :id")
     suspend fun deleteLocalModel(id: String)
+
+    @Query("DELETE FROM local_models WHERE isInstalled = 0 OR localFilePath = ''")
+    suspend fun deleteUninstalledModels()
 
     // RAG Documents
     @Query("SELECT * FROM rag_documents ORDER BY isPinnedToChat DESC, updatedAt DESC")
@@ -117,7 +120,7 @@ interface LeafyDao {
         RagDocumentEntity::class,
         PersonaPresetEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class LeafyDatabase : RoomDatabase() {

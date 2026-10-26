@@ -2,7 +2,6 @@ package com.example.viewmodel
 
 import android.content.Context
 import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -20,21 +19,25 @@ import com.example.engine.HardwareTelemetrySnapshot
 import com.example.engine.LocalInferenceEngine
 import com.example.engine.ModelDownloadManager
 import com.example.engine.OfflineVoiceHelper
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import android.provider.OpenableColumns
+import java.io.File
 
 enum class LeafyTab {
     CHAT,
     MODELS,
+    RUNTIMES,
     KNOWLEDGE,
     ECO_SETTINGS
 }
@@ -66,7 +69,7 @@ data class LeafyUiState(
     val activeBranchMessages: List<BranchedMessageItem> = emptyList(),
     val localModels: List<LocalModelEntity> = emptyList(),
     val activeModel: LocalModelEntity? = null,
-    val activeRuntime: AiRuntime = AiRuntime.BITNET_CPP,
+    val activeRuntime: AiRuntime = AiRuntime.LLAMA_CPP,
     val powerProfile: PowerProfile = PowerProfile.ECO,
     val ragDocuments: List<RagDocumentEntity> = emptyList(),
     val pinnedRagDocuments: List<RagDocumentEntity> = emptyList(),
@@ -78,7 +81,10 @@ data class LeafyUiState(
     val useComicSans: Boolean = false,
     val isDarkTheme: Boolean = false,
     val statusBannerMessage: String? = null,
-    val totalSessionTokens: Int = 142
+    val totalSessionTokens: Int = 0,
+    val isImportingModel: Boolean = false,
+    val importProgress: Float = 0f,
+    val importStatusText: String? = null
 )
 
 class LeafyViewModel(
@@ -87,7 +93,7 @@ class LeafyViewModel(
     private val inferenceEngine: LocalInferenceEngine,
     private val telemetryManager: DeviceTelemetryManager,
     private val voiceHelper: OfflineVoiceHelper,
-    private val downloadManager: ModelDownloadManager
+    private val fileManager: ModelDownloadManager
 ) : ViewModel() {
 
     private val _currentTab = MutableStateFlow(LeafyTab.CHAT)
@@ -98,7 +104,10 @@ class LeafyViewModel(
     private val _useComicSans = MutableStateFlow(false)
     private val _isDarkTheme = MutableStateFlow(false)
     private val _statusBannerMessage = MutableStateFlow<String?>(null)
-    private val _totalSessionTokens = MutableStateFlow(142)
+    private val _totalSessionTokens = MutableStateFlow(0)
+    private val _isImportingModel = MutableStateFlow(false)
+    private val _importProgress = MutableStateFlow(0f)
+    private val _importStatusText = MutableStateFlow<String?>(null)
 
     private var streamingJob: Job? = null
 
@@ -109,7 +118,7 @@ class LeafyViewModel(
         repository.ragDocuments,
         repository.personas
     ) { conversations, allMessages, models, ragDocs, personas ->
-         quintuple(conversations, allMessages, models, ragDocs, personas)
+        quintuple(conversations, allMessages, models, ragDocs, personas)
     }
 
     private val preferencesFlow = combine(
@@ -132,11 +141,20 @@ class LeafyViewModel(
         quintuple(streaming, telemetry, speakingId, banner, totalTokens)
     }
 
+    private val importFlow = combine(
+        _isImportingModel,
+        _importProgress,
+        _importStatusText
+    ) { isImporting, progress, statusText ->
+        Triple(isImporting, progress, statusText)
+    }
+
     val uiState: StateFlow<LeafyUiState> = combine(
         baseDataFlow,
         preferencesFlow,
-        runtimeOverlayFlow
-    ) { base, prefs, overlay ->
+        runtimeOverlayFlow,
+        importFlow
+    ) { base, prefs, overlay, importState ->
         val conversations = base.first
         val allMessages = base.second
         val models = base.third
@@ -167,15 +185,15 @@ class LeafyViewModel(
             activeLeafId = activeConv?.activeLeafMessageId
         )
 
-        val installedModels = models.filter {
-            it.isInstalled && it.localFilePath.isNotBlank() && java.io.File(it.localFilePath).exists()
+        val validLocalModels = models.filter {
+            it.isInstalled && it.localFilePath.isNotBlank() && File(it.localFilePath).exists() && File(it.localFilePath).length() > 0L
         }
-        val activeModel = installedModels.find { it.id == activeConv?.activeModelId }
-            ?: installedModels.firstOrNull()
+        val activeModel = validLocalModels.find { it.id == activeConv?.activeModelId }
+            ?: validLocalModels.firstOrNull()
 
         val activeRuntime = activeConv?.activeRuntimeId?.let { AiRuntime.fromId(it) }
             ?: activeModel?.runtimeId?.let { AiRuntime.fromId(it) }
-            ?: AiRuntime.BITNET_CPP
+            ?: AiRuntime.LLAMA_CPP
 
         val activePersona = personas.find { it.id == activeConv?.activePersonaId }
             ?: personas.firstOrNull()
@@ -185,7 +203,7 @@ class LeafyViewModel(
             conversations = conversations,
             activeConversation = activeConv,
             activeBranchMessages = branchedPath,
-            localModels = models,
+            localModels = validLocalModels,
             activeModel = activeModel,
             activeRuntime = activeRuntime,
             powerProfile = powerProfile,
@@ -199,7 +217,10 @@ class LeafyViewModel(
             useComicSans = useComicSans,
             isDarkTheme = isDarkTheme,
             statusBannerMessage = banner,
-            totalSessionTokens = totalTokens
+            totalSessionTokens = totalTokens,
+            isImportingModel = importState.first,
+            importProgress = importState.second,
+            importStatusText = importState.third
         )
     }.stateIn(
         scope = viewModelScope,
@@ -222,6 +243,8 @@ class LeafyViewModel(
             } else {
                 _activeConversationId.value = existingConvs.first().id
             }
+            // Automatically discover any existing model files in the app's models directory
+            scanDeviceForLocalModels(silent = true)
         }
 
         // Background hardware telemetry sampler
@@ -233,7 +256,6 @@ class LeafyViewModel(
         }
     }
 
-
     private fun resolveActiveBranchPath(
         messages: List<MessageNodeEntity>,
         activeLeafId: Long?
@@ -243,10 +265,8 @@ class LeafyViewModel(
         val byId = messages.associateBy { it.id }
         val childrenByParent = messages.groupBy { it.parentId }
 
-        // Find target leaf node
         val leafNode = (activeLeafId?.let { byId[it] }) ?: messages.last()
 
-        // Walk up from leafNode to root
         val pathReversed = mutableListOf<MessageNodeEntity>()
         var cursor: MessageNodeEntity? = leafNode
         val visited = mutableSetOf<Long>()
@@ -279,8 +299,8 @@ class LeafyViewModel(
         val next = !_useComicSans.value
         _useComicSans.value = next
         showTransientBanner(
-            if (next) "Comic Sans Mode enabled — playful & informal typography active!"
-            else "Rounded Sans-Serif (Quicksand + Nunito) typography active."
+            if (next) "Comic Sans Mode enabled."
+            else "Rounded Sans-Serif typography active."
         )
     }
 
@@ -306,7 +326,7 @@ class LeafyViewModel(
     fun createNewConversation() {
         viewModelScope.launch {
             val state = uiState.value
-            val modelId = state.activeModel?.id ?: "bitnet-b158-2b-4t"
+            val modelId = state.activeModel?.id ?: ""
             val runtimeId = state.activeRuntime.id
             val personaId = state.activePersona?.id ?: 1L
             val newId = repository.createConversation(
@@ -326,7 +346,7 @@ class LeafyViewModel(
             val remaining = repository.conversations.first()
             if (remaining.isEmpty()) {
                 val state = uiState.value
-                val modelId = state.activeModel?.id ?: "bitnet-b158-2b-4t"
+                val modelId = state.activeModel?.id ?: ""
                 val runtimeId = state.activeRuntime.id
                 val personaId = state.activePersona?.id ?: 1L
                 val newId = repository.createConversation(
@@ -344,9 +364,10 @@ class LeafyViewModel(
 
     fun switchModelAndRuntime(model: LocalModelEntity) {
         viewModelScope.launch {
-            val file = java.io.File(model.localFilePath)
+            val file = File(model.localFilePath)
             if (!model.isInstalled || model.localFilePath.isBlank() || !file.exists() || file.length() <= 0L) {
-                showTransientBanner("Model '${model.name}' is not downloaded yet. Please download it from the Models tab first.")
+                repository.deleteLocalModel(model.id)
+                showTransientBanner("Model file '${model.name}' was not found on disk.")
                 return@launch
             }
             val currentConv = uiState.value.activeConversation
@@ -358,14 +379,14 @@ class LeafyViewModel(
                     )
                 )
             }
-            showTransientBanner("Active model: ${model.name} (${model.quantization})")
+            showTransientBanner("Loaded model: ${model.name} (${model.quantization})")
         }
     }
 
     fun switchRuntimeOnly(runtime: AiRuntime) {
         viewModelScope.launch {
             val modelsForRuntime = uiState.value.localModels.filter {
-                AiRuntime.fromId(it.runtimeId) == runtime && it.isInstalled
+                AiRuntime.fromId(it.runtimeId) == runtime && it.isInstalled && File(it.localFilePath).exists()
             }
             val preferredModel = modelsForRuntime.firstOrNull()
 
@@ -378,7 +399,7 @@ class LeafyViewModel(
                     )
                 )
             }
-            showTransientBanner("Runtime switched to ${runtime.displayName} (${runtime.shortBadge})")
+            showTransientBanner("Active runtime switched to ${runtime.displayName} (${runtime.shortBadge})")
         }
     }
 
@@ -398,13 +419,13 @@ class LeafyViewModel(
             val state = uiState.value
             val model = state.activeModel
             if (model == null || !model.isInstalled || model.localFilePath.isBlank()) {
-                showTransientBanner("No local AI model downloaded yet! Please download a model from the Models tab first.")
+                showTransientBanner("No local AI model loaded. Please load a model file from the Local Models screen first.")
                 return@launch
             }
-            val modelFile = java.io.File(model.localFilePath)
+            val modelFile = File(model.localFilePath)
             if (!modelFile.exists() || modelFile.length() <= 0L) {
-                showTransientBanner("Model file not found on disk. Please download it from the Models tab.")
-                repository.updateLocalModel(model.copy(isInstalled = false, localFilePath = ""))
+                showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
+                repository.deleteLocalModel(model.id)
                 return@launch
             }
 
@@ -424,7 +445,7 @@ class LeafyViewModel(
             val profile = state.powerProfile
             val persona = state.activePersona ?: PersonaPresetEntity(
                 id = 1L,
-                name = "Leafy Eco Guide",
+                name = "Leafy Assistant",
                 iconTag = "eco",
                 tagline = "Default",
                 systemPrompt = "You are Leafy.",
@@ -432,7 +453,6 @@ class LeafyViewModel(
                 topP = 0.9f
             )
 
-            // Update conversation title if it's a fresh conversation
             if (state.activeBranchMessages.isEmpty() || conv.title == "Local AI Session" || conv.title == "New Local Session") {
                 val newTitle = cleanPrompt.take(38).let { if (cleanPrompt.length > 38) "$it…" else it }
                 repository.updateConversation(conv.copy(title = newTitle))
@@ -466,7 +486,7 @@ class LeafyViewModel(
     }
 
     /**
-     * Edits a previous user message and forks a new conversation branch from its parent!
+     * Edits a previous user message and forks a new conversation branch from its parent.
      */
     fun editUserMessageAndBranch(originalUserNode: MessageNodeEntity, editedPromptText: String) {
         val cleanPrompt = editedPromptText.trim()
@@ -476,13 +496,13 @@ class LeafyViewModel(
             val state = uiState.value
             val model = state.activeModel
             if (model == null || !model.isInstalled || model.localFilePath.isBlank()) {
-                showTransientBanner("No local AI model downloaded yet! Please download a model from the Models tab first.")
+                showTransientBanner("No local AI model loaded. Please load a model file from the Local Models screen first.")
                 return@launch
             }
-            val modelFile = java.io.File(model.localFilePath)
+            val modelFile = File(model.localFilePath)
             if (!modelFile.exists() || modelFile.length() <= 0L) {
-                showTransientBanner("Model file not found on disk. Please download it from the Models tab.")
-                repository.updateLocalModel(model.copy(isInstalled = false, localFilePath = ""))
+                showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
+                repository.deleteLocalModel(model.id)
                 return@launch
             }
 
@@ -491,7 +511,7 @@ class LeafyViewModel(
             val profile = state.powerProfile
             val persona = state.activePersona ?: PersonaPresetEntity(
                 id = 1L,
-                name = "Leafy Eco Guide",
+                name = "Leafy Assistant",
                 iconTag = "eco",
                 tagline = "Default",
                 systemPrompt = "You are Leafy.",
@@ -528,8 +548,7 @@ class LeafyViewModel(
     }
 
     /**
-     * Regenerates an assistant response under the same user prompt node, creating a new sibling branch
-     * (e.g., to compare runtimes or sampling on the exact same prompt).
+     * Regenerates an assistant response under the same user prompt node, creating a new sibling branch.
      */
     fun regenerateAssistantBranch(assistantNode: MessageNodeEntity) {
         if (_streamingPreview.value != null) return
@@ -539,13 +558,13 @@ class LeafyViewModel(
             val state = uiState.value
             val model = state.activeModel
             if (model == null || !model.isInstalled || model.localFilePath.isBlank()) {
-                showTransientBanner("No local AI model downloaded yet! Please download a model from the Models tab first.")
+                showTransientBanner("No local AI model loaded. Please load a model file from the Local Models screen first.")
                 return@launch
             }
-            val modelFile = java.io.File(model.localFilePath)
+            val modelFile = File(model.localFilePath)
             if (!modelFile.exists() || modelFile.length() <= 0L) {
-                showTransientBanner("Model file not found on disk. Please download it from the Models tab.")
-                repository.updateLocalModel(model.copy(isInstalled = false, localFilePath = ""))
+                showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
+                repository.deleteLocalModel(model.id)
                 return@launch
             }
 
@@ -558,7 +577,6 @@ class LeafyViewModel(
             val profile = state.powerProfile
             val persona = state.activePersona ?: return@launch
 
-            // Set active leaf to the user prompt while streaming the new branch
             repository.setActiveBranchLeaf(conv.id, parentUserNodeId)
 
             streamAssistantReplyForParent(
@@ -584,7 +602,6 @@ class LeafyViewModel(
             val allConvMessages = repository.observeMessages(conv.id).first()
             val childrenByParent = allConvMessages.groupBy { it.parentId }
 
-            // Walk down from targetSiblingNodeId along the most recent child chain to find its leaf
             var cursorId = targetSiblingNodeId
             val visited = mutableSetOf<Long>()
             while (visited.add(cursorId)) {
@@ -611,10 +628,10 @@ class LeafyViewModel(
         streamingJob?.cancel()
         streamingJob = viewModelScope.launch {
             var finalStepText = ""
-            var finalTps = model.expectedTps
-            var finalTtft = 45
-            var finalTokens = 32
-            var finalEnergy = 240f
+            var finalTps = 0f
+            var finalTtft = 0
+            var finalTokens = 0
+            var finalEnergy = 0f
             var finalCitations = emptyList<String>()
 
             inferenceEngine.streamResponse(
@@ -650,6 +667,10 @@ class LeafyViewModel(
             _streamingPreview.value = null
             _totalSessionTokens.value += finalTokens
             refreshTelemetry()
+
+            if (finalTps > 0f) {
+                repository.updateLocalModel(model.copy(expectedTps = finalTps))
+            }
 
             if (finalStepText.isNotBlank()) {
                 repository.insertMessageNode(
@@ -704,239 +725,199 @@ class LeafyViewModel(
         _streamingPreview.value = null
     }
 
-    fun startModelDownload(model: LocalModelEntity) {
-        if (model.isDownloading) return
-
-        viewModelScope.launch {
-            repository.updateLocalModel(
-                model.copy(
-                    isDownloading = true,
-                    downloadProgress = 0.01f,
-                    downloadSpeedMb = 0f
-                )
-            )
-            showTransientBanner("Started downloading ${model.name} weights…")
-
-            val targetFileName = "${model.id}.${AiRuntime.fromId(model.runtimeId).fileExtensions.first().removePrefix(".")}"
-            val fallbackBytes = (model.sizeMb * 1024L * 1024L)
-
-            downloadManager.downloadModel(
-                modelId = model.id,
-                url = model.downloadUrl,
-                targetFileName = targetFileName,
-                fallbackTotalBytes = fallbackBytes
-            ).collect { status ->
-                if (status.isComplete) {
-                    repository.updateLocalModel(
-                        model.copy(
-                            isInstalled = true,
-                            isDownloading = false,
-                            downloadProgress = 1.0f,
-                            localFilePath = status.localFilePath,
-                            downloadedBytes = status.totalBytes,
-                            totalBytes = status.totalBytes,
-                            downloadSpeedMb = 0f
-                        )
-                    )
-                    val conv = uiState.value.activeConversation
-                    if (conv != null) {
-                        repository.updateConversation(
-                            conv.copy(
-                                activeModelId = model.id,
-                                activeRuntimeId = model.runtimeId
-                            )
-                        )
-                    }
-                    showTransientBanner("Downloaded & verified ${model.name}! Ready for offline inference.")
-                } else if (status.error != null) {
-                    repository.updateLocalModel(
-                        model.copy(
-                            isDownloading = false,
-                            downloadProgress = 0f,
-                            downloadSpeedMb = 0f
-                        )
-                    )
-                    showTransientBanner(status.error)
-                } else {
-                    repository.updateLocalModel(
-                        model.copy(
-                            isDownloading = true,
-                            downloadProgress = status.progress,
-                            downloadedBytes = status.downloadedBytes,
-                            totalBytes = status.totalBytes,
-                            downloadSpeedMb = status.speedMbPerSec,
-                            localFilePath = status.localFilePath
-                        )
-                    )
-                }
-            }
-        }
-    }
-
-    fun cancelModelDownload(modelId: String) {
-        downloadManager.cancelDownload(modelId)
-        viewModelScope.launch {
-            val model = uiState.value.localModels.find { it.id == modelId } ?: return@launch
-            repository.updateLocalModel(
-                model.copy(
-                    isDownloading = false,
-                    downloadProgress = 0f,
-                    downloadSpeedMb = 0f
-                )
-            )
-            showTransientBanner("Cancelled download for ${model.name}.")
-        }
-    }
-
     fun deleteDownloadedModel(model: LocalModelEntity) {
         viewModelScope.launch {
-            downloadManager.deleteModelFile(model.localFilePath)
-            repository.updateLocalModel(
-                model.copy(
-                    isInstalled = false,
-                    isDownloading = false,
-                    downloadProgress = 0f,
-                    downloadedBytes = 0L,
-                    localFilePath = ""
-                )
-            )
-            showTransientBanner("Deleted local weights for ${model.name} (${model.sizeMb} MB storage freed).")
+            fileManager.deleteModelFile(model.localFilePath)
+            repository.deleteLocalModel(model.id)
+            showTransientBanner("Removed local model '${model.name}' (${model.sizeMb} MB).")
         }
     }
 
-    fun downloadCustomModelFromUrl(
-        url: String,
-        name: String,
-        runtime: AiRuntime,
-        quant: String,
-        sizeMb: Int
-    ) {
-        viewModelScope.launch {
-            val cleanName = name.ifBlank { url.substringAfterLast("/").take(28) }
-            val customModel = LocalModelEntity(
-                id = "dl-${System.currentTimeMillis()}",
-                name = cleanName,
-                family = "Hugging Face Model Hub",
-                runtimeId = runtime.id,
-                quantization = quant.ifBlank { runtime.defaultQuantization },
-                parameters = "${(sizeMb / 580f).coerceIn(0.4f, 14.0f).let { "%.1fB".format(it) }}",
-                sizeMb = sizeMb.coerceAtLeast(64),
-                ramRequiredMb = (sizeMb * 1.25f).toInt(),
-                contextWindow = 4096,
-                expectedTps = 38.0f,
-                ecoRating = 5,
-                specialty = "Downloaded directly from $url for offline inference.",
-                isInstalled = false,
-                isUserImported = true,
-                downloadUrl = url,
-                sha256Short = Integer.toHexString(url.hashCode()).take(8)
-            )
-            repository.insertLocalModel(customModel)
-            startModelDownload(customModel)
-        }
-    }
+    /**
+     * Loads a local model file from a user-selected Android Uri (Storage Access Framework),
+     * copies it into the local engine storage directory, validates its binary header,
+     * and activates it for offline inference.
+     */
+    fun importLocalModelFromUri(uri: Uri?) {
+        if (uri == null || _isImportingModel.value) return
 
-    fun importLocalModelFromUri(uri: Uri?, fallbackName: String = "Custom-Edge-Model-Q4_K_M.gguf") {
         viewModelScope.launch {
-            var displayName = fallbackName
-            var sizeMb = 1180
+            _isImportingModel.value = true
+            _importProgress.value = 0.01f
+            _importStatusText.value = "Reading local model file…"
 
-            if (uri != null) {
-                try {
-                    appContext.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                        if (cursor.moveToFirst()) {
-                            if (nameIdx >= 0) {
-                                displayName = cursor.getString(nameIdx) ?: fallbackName
-                            }
-                            if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
-                                val bytes = cursor.getLong(sizeIdx)
-                                sizeMb = (bytes / (1024L * 1024L)).toInt().coerceAtLeast(85)
-                            }
-                        }
+            fileManager.importModelFromUri(uri).collect { status ->
+                if (status.error != null) {
+                    _isImportingModel.value = false
+                    _importProgress.value = 0f
+                    _importStatusText.value = null
+                    showTransientBanner(status.error)
+                } else if (!status.isComplete) {
+                    _isImportingModel.value = true
+                    _importProgress.value = status.progress
+                    val copiedMb = status.copiedBytes / (1024L * 1024L)
+                    val totalMb = status.totalBytes / (1024L * 1024L)
+                    _importStatusText.value = if (totalMb > 0L) {
+                        "Loading '${status.displayName}' into engine storage: $copiedMb / $totalMb MB (${(status.progress * 100).toInt()}%)"
+                    } else {
+                        "Loading '${status.displayName}' into engine storage: $copiedMb MB"
                     }
-                } catch (_: Exception) {
+                } else {
+                    _isImportingModel.value = false
+                    _importProgress.value = 1.0f
+                    _importStatusText.value = null
+
+                    val modelFile = File(status.localFilePath)
+                    val registered = registerVerifiedLocalModelFile(
+                        file = modelFile,
+                        displayName = status.displayName,
+                        precomputedSha = status.sha256Short
+                    )
+                    if (registered != null) {
+                        switchModelAndRuntime(registered)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Scans local app storage and Download folder for .gguf, .pte, .tmac, .bitnet files,
+     * verifies their headers, and registers them in the local database.
+     */
+    fun scanDeviceForLocalModels(silent: Boolean = false) {
+        viewModelScope.launch {
+            val discoveredFiles = withContext(Dispatchers.IO) {
+                fileManager.scanDiskForModelFiles()
+            }
+            var addedCount = 0
+            val existingPaths = repository.localModels.first().map { it.localFilePath }.toSet()
+
+            for (file in discoveredFiles) {
+                if (file.absolutePath !in existingPaths) {
+                    val registered = registerVerifiedLocalModelFile(
+                        file = file,
+                        displayName = file.name,
+                        precomputedSha = "",
+                        silentInvalid = true
+                    )
+                    if (registered != null) {
+                        addedCount++
+                    }
                 }
             }
 
-            val lower = displayName.lowercase()
-            val detectedRuntime = when {
-                lower.endsWith(".pte") -> AiRuntime.EXECUTORCH
-                lower.contains("bitnet") || lower.contains("1.58") || lower.contains("i2_s") -> AiRuntime.BITNET_CPP
-                lower.endsWith(".tmac") || lower.contains("lut") -> AiRuntime.T_MAC
-                else -> AiRuntime.LLAMA_CPP
+            if (!silent) {
+                if (addedCount > 0) {
+                    showTransientBanner("Discovered and loaded $addedCount local model file(s) from device storage.")
+                } else if (uiState.value.localModels.isNotEmpty()) {
+                    showTransientBanner("All ${uiState.value.localModels.size} local model file(s) in storage are already loaded.")
+                } else {
+                    showTransientBanner("No new .gguf, .pte, or .tmac files found in ${fileManager.modelsDir.name}. Use 'Select Model File' to pick from anywhere on device.")
+                }
             }
-
-            val detectedQuant = when {
-                lower.contains("q8") -> "Q8_0"
-                lower.contains("q5") -> "Q5_K_M"
-                lower.contains("1.58") || lower.contains("i2_s") -> "1.58-bit i2_s"
-                lower.contains("lut") -> "INT4-LUT"
-                lower.endsWith(".pte") -> "INT4-XNNPACK"
-                else -> "Q4_K_M"
-            }
-
-            val cleanTitle = displayName
-                .removeSuffix(".gguf")
-                .removeSuffix(".pte")
-                .removeSuffix(".tmac")
-                .removeSuffix(".bin")
-                .replace("_", " ")
-                .replace("-", " ")
-
-            val customModel = LocalModelEntity(
-                id = "custom-${System.currentTimeMillis()}",
-                name = cleanTitle,
-                family = "User Imported Local Weights",
-                runtimeId = detectedRuntime.id,
-                quantization = detectedQuant,
-                parameters = "${(sizeMb / 550f).coerceIn(0.5f, 8.0f).let { "%.1fB".format(it) }}",
-                sizeMb = sizeMb,
-                ramRequiredMb = (sizeMb * 1.28f).toInt(),
-                contextWindow = 4096,
-                expectedTps = 36.5f,
-                ecoRating = 5,
-                specialty = "Imported directly from device storage (${displayName}) with zero cloud upload.",
-                isInstalled = true,
-                isUserImported = true,
-                localFilePath = uri?.toString() ?: "/sdcard/Download/$displayName",
-                sha256Short = Integer.toHexString(displayName.hashCode()).take(8)
-            )
-
-            repository.insertLocalModel(customModel)
-            switchModelAndRuntime(customModel)
         }
     }
 
-    fun importCustomModelManual(
-        name: String,
-        runtime: AiRuntime,
-        quantization: String,
-        sizeMb: Int
-    ) {
-        viewModelScope.launch {
-            val customModel = LocalModelEntity(
-                id = "custom-${System.currentTimeMillis()}",
-                name = name.ifBlank { "Custom Local Model" },
-                family = "User Local Weight Import",
-                runtimeId = runtime.id,
-                quantization = quantization.ifBlank { runtime.defaultQuantization },
-                parameters = "${(sizeMb / 580f).coerceIn(0.4f, 13.0f).let { "%.1fB".format(it) }}",
-                sizeMb = sizeMb.coerceAtLeast(64),
-                ramRequiredMb = (sizeMb * 1.25f).toInt().coerceAtLeast(128),
-                contextWindow = 4096,
-                expectedTps = 39.0f,
-                ecoRating = 5,
-                specialty = "Custom quantized local weight file mapped into ${runtime.displayName}.",
-                isInstalled = true,
-                isUserImported = true,
-                localFilePath = "/storage/emulated/0/LeafyModels/${name.lowercase().replace(" ", "_")}${runtime.fileExtensions.first()}",
-                sha256Short = Integer.toHexString(name.hashCode()).take(8)
-            )
-            repository.insertLocalModel(customModel)
-            switchModelAndRuntime(customModel)
+    private suspend fun registerVerifiedLocalModelFile(
+        file: File,
+        displayName: String,
+        precomputedSha: String = "",
+        silentInvalid: Boolean = false
+    ): LocalModelEntity? = withContext(Dispatchers.IO) {
+        if (!file.exists() || file.length() < 8L) {
+            if (!silentInvalid) {
+                showTransientBanner("Selected file '$displayName' could not be read or is too small.")
+            }
+            return@withContext null
         }
+
+        val ggufHeader = inferenceEngine.readGgufHeader(file)
+        val pteHeader = inferenceEngine.readPteHeader(file)
+        val tmacHeader = inferenceEngine.readTmacHeader(file)
+        val lower = displayName.lowercase()
+
+        val isSupportedExtension = lower.endsWith(".gguf") ||
+            lower.endsWith(".pte") ||
+            lower.endsWith(".tmac") ||
+            lower.endsWith(".bitnet") ||
+            lower.endsWith(".bin")
+
+        if (!ggufHeader.isValidGguf && !pteHeader.isValidPte && !tmacHeader.isValidTmac && !isSupportedExtension) {
+            fileManager.deleteModelFile(file.absolutePath)
+            if (!silentInvalid) {
+                showTransientBanner("Invalid model file '$displayName': Not a valid .gguf, .pte, or .tmac binary.")
+            }
+            return@withContext null
+        }
+
+        val detectedRuntime = when {
+            pteHeader.isValidPte || lower.endsWith(".pte") -> AiRuntime.EXECUTORCH
+            tmacHeader.isValidTmac || lower.endsWith(".tmac") || lower.contains("tmac") || lower.contains("lut") -> AiRuntime.T_MAC
+            lower.contains("bitnet") || lower.contains("1.58") || lower.contains("i2_s") || lower.endsWith(".bitnet") -> AiRuntime.BITNET_CPP
+            else -> AiRuntime.LLAMA_CPP
+        }
+
+        val detectedQuant = when {
+            lower.contains("q8_0") || lower.contains("q8") -> "Q8_0"
+            lower.contains("q6_k") -> "Q6_K"
+            lower.contains("q5_k_m") || lower.contains("q5") -> "Q5_K_M"
+            lower.contains("q4_k_m") -> "Q4_K_M"
+            lower.contains("q4_0") -> "Q4_0"
+            lower.contains("iq4") -> "IQ4_XS"
+            lower.contains("1.58") || lower.contains("i2_s") -> "1.58-bit i2_s"
+            tmacHeader.isValidTmac -> tmacHeader.formatType
+            pteHeader.isValidPte -> "PTE Flatbuffer"
+            ggufHeader.isValidGguf -> "GGUF v${ggufHeader.version}"
+            else -> detectedRuntime.defaultQuantization
+        }
+
+        val bytes = file.length()
+        val sizeMb = (bytes / (1024L * 1024L)).toInt().coerceAtLeast(1)
+        val shaHex = precomputedSha.ifBlank { fileManager.computeFileSha256Short(file) }
+
+        val headerSummary = when {
+            ggufHeader.isValidGguf -> "Verified GGUF v${ggufHeader.version} • ${ggufHeader.tensorCount} tensors • ${ggufHeader.metadataKvCount} metadata KV pairs"
+            pteHeader.isValidPte -> "Verified ExecuTorch PTE binary (${pteHeader.magicString.trim()}) • ${bytes / 1024} KB"
+            tmacHeader.isValidTmac -> "Verified T-MAC ${tmacHeader.formatType} binary • ${tmacHeader.tensorCount} LUT tensors"
+            else -> "Local model binary (${file.name}) • ${bytes / 1024} KB"
+        }
+
+        val cleanTitle = displayName
+            .removeSuffix(".gguf")
+            .removeSuffix(".GGUF")
+            .removeSuffix(".pte")
+            .removeSuffix(".PTE")
+            .removeSuffix(".tmac")
+            .removeSuffix(".bitnet")
+            .removeSuffix(".bin")
+            .replace("_", " ")
+            .trim()
+            .ifBlank { displayName }
+
+        val modelId = "local-${shaHex.ifBlank { file.name.hashCode().toUInt().toString(16) }}"
+        val customModel = LocalModelEntity(
+            id = modelId,
+            name = cleanTitle,
+            family = "Local Device Storage",
+            runtimeId = detectedRuntime.id,
+            quantization = detectedQuant,
+            parameters = "${sizeMb} MB",
+            sizeMb = sizeMb,
+            ramRequiredMb = (sizeMb * 1.25f).toInt().coerceAtLeast(64),
+            contextWindow = 4096,
+            expectedTps = 0f,
+            ecoRating = 5,
+            specialty = "$headerSummary • Path: ${file.name}",
+            isInstalled = true,
+            isUserImported = true,
+            localFilePath = file.absolutePath,
+            sha256Short = shaHex,
+            fileSizeBytes = bytes
+        )
+
+        repository.insertLocalModel(customModel)
+        customModel
     }
 
     // RAG Document Actions
@@ -955,7 +936,7 @@ class LeafyViewModel(
         if (title.isBlank() || content.isBlank()) return
         viewModelScope.launch {
             val paragraphs = content.split(Regex("\\n\\s*\\n")).filter { it.isNotBlank() }.size.coerceAtLeast(1)
-            val tokens = (content.split(Regex("\\s+")).size * 1.3f).toInt().coerceAtLeast(12)
+            val tokens = (content.split(Regex("\\s+")).size * 1.3f).toInt().coerceAtLeast(1)
             repository.insertRagDocument(
                 RagDocumentEntity(
                     title = title.trim(),
@@ -974,21 +955,25 @@ class LeafyViewModel(
         if (uri == null) return
         viewModelScope.launch {
             try {
-                var title = "Imported_Local_Note.txt"
+                var title = "Imported_Note.txt"
                 appContext.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (cursor.moveToFirst() && nameIdx >= 0) {
                         title = cursor.getString(nameIdx) ?: title
                     }
                 }
-                val text = appContext.contentResolver.openInputStream(uri)?.bufferedReader()?.use {
-                    it.readText().take(8000)
-                } ?: ""
+                val text = withContext(Dispatchers.IO) {
+                    appContext.contentResolver.openInputStream(uri)?.bufferedReader()?.use {
+                        it.readText().take(16000)
+                    } ?: ""
+                }
                 if (text.isNotBlank()) {
                     addRagDocument(title = title, category = "Imported File", content = text)
+                } else {
+                    showTransientBanner("Selected file '$title' is empty.")
                 }
-            } catch (_: Exception) {
-                showTransientBanner("Could not read file content.")
+            } catch (e: Exception) {
+                showTransientBanner("Could not read file: ${e.message ?: "Read error"}")
             }
         }
     }
@@ -1037,8 +1022,8 @@ class LeafyViewModel(
             repository.wipeAllHistory()
             val newId = repository.createConversation(
                 title = "Local AI Session",
-                modelId = "",
-                runtimeId = AiRuntime.LLAMA_CPP.id,
+                modelId = uiState.value.activeModel?.id ?: "",
+                runtimeId = uiState.value.activeRuntime.id,
                 personaId = 1L
             )
             _activeConversationId.value = newId
@@ -1086,14 +1071,14 @@ class LeafyViewModel(
                     val engine = LocalInferenceEngine(appContext)
                     val telemetry = DeviceTelemetryManager(appContext)
                     val voice = OfflineVoiceHelper(appContext)
-                    val downloadManager = ModelDownloadManager(appContext)
+                    val fileManager = ModelDownloadManager(appContext)
                     return LeafyViewModel(
                         appContext = appContext,
                         repository = repo,
                         inferenceEngine = engine,
                         telemetryManager = telemetry,
                         voiceHelper = voice,
-                        downloadManager = downloadManager
+                        fileManager = fileManager
                     ) as T
                 }
             }

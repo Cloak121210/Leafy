@@ -11,13 +11,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,12 +23,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.EnergySavingsLeaf
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -95,7 +93,6 @@ fun OrganicLeafBackground(
             val w = size.width
             val h = size.height
 
-            // Sunbeam radial glow top-right
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(secondaryTint.copy(alpha = 0.09f), Color.Transparent),
@@ -106,7 +103,6 @@ fun OrganicLeafBackground(
                 radius = w * 0.65f
             )
 
-            // Chlorophyll glow bottom-left
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(primaryTint.copy(alpha = 0.10f), Color.Transparent),
@@ -117,7 +113,6 @@ fun OrganicLeafBackground(
                 radius = w * 0.7f
             )
 
-            // Decorative botanical leaf contour curves
             val leafStem = Path().apply {
                 moveTo(w * 0.92f, h * 0.02f)
                 cubicTo(
@@ -147,130 +142,6 @@ fun OrganicLeafBackground(
             )
         }
         content()
-    }
-}
-
-/**
- * Colorful hero banner illustration combining botanical leaves and quantized neural nodes.
- */
-@Composable
-fun BotanicalNeuralHeroCard(
-    title: String,
-    subtitle: String,
-    activeRuntime: AiRuntime,
-    powerProfile: PowerProfile,
-    telemetry: HardwareTelemetrySnapshot,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(26.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
-    ) {
-        Box(modifier = Modifier.fillMaxWidth()) {
-            val leafColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-            val nodeColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.28f)
-
-            Canvas(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(148.dp)
-            ) {
-                val w = size.width
-                val h = size.height
-
-                val leafPath = Path().apply {
-                    moveTo(w * 0.68f, h * 0.88f)
-                    cubicTo(w * 0.65f, h * 0.35f, w * 0.82f, h * 0.10f, w * 0.96f, h * 0.14f)
-                    cubicTo(w * 0.98f, h * 0.58f, w * 0.84f, h * 0.86f, w * 0.68f, h * 0.88f)
-                    close()
-                }
-                drawPath(path = leafPath, color = leafColor)
-
-                val p1 = Offset(w * 0.74f, h * 0.70f)
-                val p2 = Offset(w * 0.82f, h * 0.48f)
-                val p3 = Offset(w * 0.90f, h * 0.26f)
-                drawLine(color = nodeColor, start = p1, end = p2, strokeWidth = 4f)
-                drawLine(color = nodeColor, start = p2, end = p3, strokeWidth = 4f)
-                drawCircle(color = nodeColor, radius = 10f, center = p1)
-                drawCircle(color = nodeColor, radius = 12f, center = p2)
-                drawCircle(color = nodeColor, radius = 9f, center = p3)
-            }
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    RuntimeBadgePill(runtime = activeRuntime)
-                    PowerProfilePill(profile = powerProfile, onClick = null)
-                }
-
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                )
-
-                Row(
-                    modifier = Modifier.padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TelemetryMiniStat(
-                        label = "Battery",
-                        value = "${telemetry.batteryPercent}% (${telemetry.batteryTempCelsius}°C)"
-                    )
-                    TelemetryMiniStat(
-                        label = "Draw",
-                        value = "~${telemetry.instantaneousMilliwatts} mW"
-                    )
-                    TelemetryMiniStat(
-                        label = "RAM Free",
-                        value = "${telemetry.availableRamMb} MB"
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TelemetryMiniStat(label: String, value: String) {
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = "$label:",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontFamily = JetBrainsMonoFontFamily,
-                    fontWeight = FontWeight.Bold
-                ),
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
     }
 }
 
@@ -351,8 +222,8 @@ fun PowerProfilePill(
 }
 
 /**
- * Minimal, clean floating Top Bar for the front-and-center Chat interface.
- * Secondary screens show a clean Back button and screen title.
+ * Clean floating Top Bar for the front-and-center Chat interface.
+ * Keeps Model selection, Runtime selection, and Power Mode / Studio Controls in completely separate menus.
  */
 @Composable
 fun LeafyCleanTopBar(
@@ -365,6 +236,7 @@ fun LeafyCleanTopBar(
     onOpenCanopyDrawer: () -> Unit,
     onNavigateBackToChat: () -> Unit,
     onOpenModelSwitcher: () -> Unit,
+    onOpenRuntimeSwitcher: () -> Unit,
     onOpenSpecialCommandMenu: () -> Unit,
     onOpenSettingsScreen: () -> Unit,
     modifier: Modifier = Modifier
@@ -398,11 +270,11 @@ fun LeafyCleanTopBar(
                     }
                 }
 
-                // Center: Floating Botanical Model & Runtime Capsule
+                // Center: Dedicated Local Model Switcher Pill (Strictly for Local Models)
                 Surface(
                     modifier = Modifier
                         .weight(1f, fill = false)
-                        .padding(horizontal = 10.dp)
+                        .padding(horizontal = 8.dp)
                         .clip(RoundedCornerShape(50))
                         .clickable(onClick = onOpenModelSwitcher)
                         .testTag("top_model_switcher_pill"),
@@ -412,14 +284,14 @@ fun LeafyCleanTopBar(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         val hasActiveModel = activeModel != null && activeModel.isInstalled
-                        val dotColor = if (hasActiveModel) runtimeAccentColor(activeRuntime) else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
-                        val titleText = if (hasActiveModel) activeModel.name else "No Model Downloaded"
-                        val subtitleText = if (hasActiveModel) "${activeRuntime.displayName} • ${powerProfile.displayName}" else "Tap to download weights"
+                        val dotColor = if (hasActiveModel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+                        val titleText = if (hasActiveModel) activeModel.name else "No Model Loaded"
+                        val subtitleText = if (hasActiveModel) "${activeModel.quantization} • ${activeModel.sizeMb} MB" else "Tap to load local model"
 
                         Box(
                             modifier = Modifier
@@ -448,18 +320,40 @@ fun LeafyCleanTopBar(
                         }
                         Icon(
                             imageVector = Icons.Default.ExpandMore,
-                            contentDescription = "Switch model",
+                            contentDescription = "Switch local model",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(16.dp)
                         )
                     }
                 }
 
-                // Right: Special Command Menu (Bento Hub) + Quick Settings Icon
+                // Right: Dedicated Runtime Switcher Button + Power Mode Controls + Settings
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    // Dedicated Runtime Engine Menu Button (Separate from Models & Modes)
+                    Surface(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onOpenRuntimeSwitcher)
+                            .testTag("top_runtime_switcher_button"),
+                        shape = CircleShape,
+                        color = runtimeAccentColor(activeRuntime).copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, runtimeAccentColor(activeRuntime).copy(alpha = 0.45f))
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Memory,
+                                contentDescription = "Switch Inference Runtime (${activeRuntime.displayName})",
+                                tint = runtimeAccentColor(activeRuntime),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    // Power Modes & Studio Controls Button
                     Surface(
                         modifier = Modifier
                             .size(44.dp)
@@ -473,7 +367,7 @@ fun LeafyCleanTopBar(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Tune,
-                                contentDescription = "Special AI Controls Menu",
+                                contentDescription = "Power Modes & Studio Controls",
                                 tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                 modifier = Modifier.size(20.dp)
                             )

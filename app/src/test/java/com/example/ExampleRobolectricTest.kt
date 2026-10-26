@@ -92,7 +92,19 @@ class ExampleRobolectricTest {
     @Test
     fun `rag context returns empty for greetings and matches relevant queries`() {
         val engine = com.example.engine.LocalInferenceEngine()
-        val docs = com.example.data.LeafyRepository.defaultRagDocuments()
+        assertTrue("No fake pre-populated RAG documents should exist by default", com.example.data.LeafyRepository.defaultRagDocuments().isEmpty())
+
+        val docs = listOf(
+            com.example.data.RagDocumentEntity(
+                id = 1L,
+                title = "Off-Grid Solar & Permaculture Notes.txt",
+                category = "Notes",
+                content = "Our cabin battery bank uses a 48V 100Ah LiFePO4 battery with 4.8kWh capacity and MPPT solar charge controller.",
+                chunkCount = 1,
+                tokenEstimate = 24,
+                isPinnedToChat = true
+            )
+        )
 
         // Greeting should have 0 RAG snippets
         val greetingSnippets = engine.retrieveRagContext("Hi!", docs)
@@ -105,25 +117,71 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `all default models start uninstalled and require download`() {
+    fun `no fake pre-populated models exist by default`() {
         val models = com.example.data.LeafyRepository.defaultLocalModels()
-        assertTrue(models.isNotEmpty())
-        assertTrue("All models must start uninstalled", models.all { !it.isInstalled })
-        assertTrue("All models must have blank localFilePath initially", models.all { it.localFilePath.isBlank() })
+        assertTrue("Default local models must be empty with zero fake downloads", models.isEmpty())
     }
 
     @Test
-    fun `inference engine refuses inference when model file is not downloaded`() {
+    fun `local model manager imports model file from URI into verified local storage`() {
+        kotlinx.coroutines.runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val manager = com.example.engine.ModelDownloadManager(context)
+            val tempSourceFile = java.io.File.createTempFile("local_source_model", ".gguf")
+            val validGgufBytes = java.io.ByteArrayOutputStream().apply {
+                write("GGUF".toByteArray(Charsets.US_ASCII))
+                write(byteArrayOf(3, 0, 0, 0))
+                write(byteArrayOf(64, 0, 0, 0, 0, 0, 0, 0))
+                write(byteArrayOf(12, 0, 0, 0, 0, 0, 0, 0))
+                write(ByteArray(1024) { (it % 127).toByte() })
+            }.toByteArray()
+            tempSourceFile.writeBytes(validGgufBytes)
+
+            var finalStatus: com.example.engine.LocalModelLoadStatus? = null
+            manager.importModelFromUri(android.net.Uri.fromFile(tempSourceFile)).collect { status ->
+                finalStatus = status
+            }
+            assertTrue(finalStatus != null)
+            assertTrue(finalStatus!!.isComplete)
+            val loadedFile = java.io.File(finalStatus!!.localFilePath)
+            assertTrue(loadedFile.exists())
+            assertEquals(validGgufBytes.size.toLong(), finalStatus!!.totalBytes)
+            assertTrue(finalStatus!!.sha256Short.isNotEmpty())
+
+            tempSourceFile.delete()
+        }
+    }
+
+    @Test
+    fun `inference engine refuses inference when model file is missing on disk`() {
         kotlinx.coroutines.runBlocking {
             val engine = com.example.engine.LocalInferenceEngine()
-            val uninstalledModel = com.example.data.LeafyRepository.defaultLocalModels().first()
+            val missingModel = com.example.data.LocalModelEntity(
+                id = "missing_test_model",
+                name = "Missing Test Model",
+                family = "GGUF",
+                runtimeId = AiRuntime.LLAMA_CPP.id,
+                quantization = "Q4_K_M",
+                parameters = "135M",
+                sizeMb = 100,
+                ramRequiredMb = 256,
+                contextWindow = 2048,
+                expectedTps = 25f,
+                ecoRating = 5,
+                specialty = "Test model",
+                isInstalled = false,
+                isUserImported = true,
+                localFilePath = "/nonexistent/path/model.gguf",
+                sha256Short = "none",
+                fileSizeBytes = 0L
+            )
             val persona = com.example.data.LeafyRepository.defaultPersonas().first()
             val docs = com.example.data.LeafyRepository.defaultRagDocuments()
 
             var lastStep: com.example.engine.StreamingStep? = null
             engine.streamResponse(
                 userPrompt = "Hi!",
-                model = uninstalledModel,
+                model = missingModel,
                 runtime = AiRuntime.LLAMA_CPP,
                 powerProfile = PowerProfile.ECO,
                 persona = persona,
@@ -146,9 +204,24 @@ class ExampleRobolectricTest {
 
         // First test invalid file (not GGUF magic bytes)
         tempModelFile.writeBytes(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24))
-        val installedModel = com.example.data.LeafyRepository.defaultLocalModels().first().copy(
+        val installedModel = com.example.data.LocalModelEntity(
+            id = "test_gguf_model",
+            name = "Test GGUF Model",
+            family = "GGUF",
+            runtimeId = AiRuntime.LLAMA_CPP.id,
+            quantization = "Q4_K_M",
+            parameters = "135M",
+            sizeMb = 1,
+            ramRequiredMb = 256,
+            contextWindow = 2048,
+            expectedTps = 25f,
+            ecoRating = 5,
+            specialty = "Test local model",
             isInstalled = true,
-            localFilePath = tempModelFile.absolutePath
+            isUserImported = true,
+            localFilePath = tempModelFile.absolutePath,
+            sha256Short = "abcd1234",
+            fileSizeBytes = tempModelFile.length()
         )
         val persona = com.example.data.LeafyRepository.defaultPersonas().first()
         val docs = com.example.data.LeafyRepository.defaultRagDocuments()
@@ -223,16 +296,16 @@ class ExampleRobolectricTest {
 
         // Test TMAC header verification
         val tempTmac = java.io.File.createTempFile("test_model", ".tmac")
-        tempTmac.writeBytes("TMAC".toByteArray(Charsets.US_ASCII) + ByteArray(16))
+        tempTmac.writeBytes("TMAC".toByteArray(Charsets.US_ASCII) + ByteArray(512) { (it * 7).toByte() })
         val tmacHeader = engine.readTmacHeader(tempTmac)
         assertTrue(tmacHeader.isValidTmac)
         assertEquals("INT3-LUT", tmacHeader.formatType)
-        tempTmac.delete()
 
-        // Test T-MAC LUT processor
+        // Test T-MAC LUT processor on real file bytes
         val lutProcessor = com.example.engine.TMacLutProcessor(bits = 3, threads = 4)
-        val lutOutput = lutProcessor.processPrompt("Explain quantum computing")
+        val lutOutput = lutProcessor.executeFileLutPass(tempTmac, "Explain quantum computing")
         assertTrue(lutOutput.contains("T-MAC LUT"))
-        assertTrue(lutOutput.contains("quantum computing"))
+        assertTrue(lutOutput.contains("LUT table lookups completed"))
+        tempTmac.delete()
     }
 }

@@ -76,8 +76,6 @@ fun KnowledgeAndPersonasScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             onImportRagUri(uri)
-        } else {
-            showAddDocDialog = true
         }
     }
 
