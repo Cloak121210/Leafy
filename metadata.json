@@ -1,0 +1,6 @@
+{
+  "name": "Leafy",
+  "description": "PocketPal-style offline local AI model inference app supporting llama.cpp, Bitnet.cpp, T-MAC, and ExecuTorch with eco-power profiles, conversation branching, local RAG, and a bright botanical interface.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

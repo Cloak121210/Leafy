@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Bold botanical leaf + AI spark silhouette inside safe zone -->
+    <path
+        android:fillColor="#FFF6FBF4"
+        android:pathData="M74,30 C46,30 32,46 32,68 C32,72 33,76 35,79 L46,68 C48,66 51,66 53,68 C55,70 55,73 53,75 L41,87 C45,89 49,90 54,90 C76,90 84,68 84,40 C84,34 80,30 74,30 Z" />
+    <path
+        android:fillColor="#FFE08E26"
+        android:pathData="M34,30 L37,38 L45,41 L37,44 L34,52 L31,44 L23,41 L31,38 Z" />
+</vector>

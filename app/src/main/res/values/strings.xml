@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Leafy</string>
+    <string name="tagline_offline_eco">100% Offline • Eco-Quantized Local AI</string>
+    <string name="nav_chat">Chat Studio</string>
+    <string name="nav_models">Models &amp; Runtimes</string>
+    <string name="nav_knowledge">RAG &amp; Personas</string>
+    <string name="nav_eco">Eco &amp; Style</string>
+    <string name="composer_hint">Ask Leafy anything offline…</string>
+    <string name="send_message">Send message</string>
+    <string name="voice_input">Voice input</string>
+    <string name="speak_response">Read response aloud offline</string>
+    <string name="edit_branch">Edit &amp; branch conversation</string>
+    <string name="import_model_weights">Import Local Model File (.gguf / .bin / .pte)</string>
+    <string name="toggle_comic_sans">Toggle Comic Sans Mode</string>
+    <string name="power_profile_eco">Eco Leaf</string>
+    <string name="power_profile_balanced">Balanced</string>
+    <string name="power_profile_performance">Performance</string>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "summary":  "Comprehensive implementation plan for Leafy, an offline-first, privacy and eco-focused local AI inference Android app inspired by PocketPal, supporting llama.cpp, Bitnet.cpp, T-MAC, and ExecuTorch runtimes, preset power profiles, full community local AI workflows (branching, local RAG, offline voice/TTS, live battery/token telemetry, persona presets), and a bright organic botanical theme with rounded sans-serif and Comic Sans typography options.",
+  "updatedAt":  "2026-10-26T10:02:47.752739344Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
