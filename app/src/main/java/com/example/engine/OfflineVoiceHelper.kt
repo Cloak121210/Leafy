@@ -12,6 +12,8 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
 
     private var tts: TextToSpeech? = null
     private var isReady = false
+    private var initFailed = false
+    private var pendingUtterance: Pair<Long, String>? = null
 
     private val _speakingMessageId = MutableStateFlow<Long?>(null)
     val speakingMessageId: StateFlow<Long?> = _speakingMessageId.asStateFlow()
@@ -21,6 +23,7 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
             tts = TextToSpeech(context.applicationContext, this)
         } catch (_: Exception) {
             isReady = false
+            initFailed = true
         }
     }
 
@@ -44,6 +47,14 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
                 }
             })
             isReady = true
+            pendingUtterance?.let { (msgId, text) ->
+                pendingUtterance = null
+                speakNow(msgId, text)
+            }
+        } else {
+            initFailed = true
+            pendingUtterance = null
+            _speakingMessageId.value = null
         }
     }
 
@@ -53,15 +64,29 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
             return
         }
         val cleanText = sanitizeForSpeech(rawMarkdownText)
+        if (cleanText.isBlank() || initFailed || tts == null) {
+            _speakingMessageId.value = null
+            return
+        }
 
+        if (isReady) {
+            speakNow(messageId, cleanText)
+        } else {
+            _speakingMessageId.value = messageId
+            pendingUtterance = messageId to cleanText
+        }
+    }
+
+    private fun speakNow(messageId: Long, cleanText: String) {
         _speakingMessageId.value = messageId
-        if (isReady && tts != null) {
-            tts?.speak(
-                cleanText,
-                TextToSpeech.QUEUE_FLUSH,
-                null,
-                "leafy_msg_$messageId"
-            )
+        val result = tts?.speak(
+            cleanText,
+            TextToSpeech.QUEUE_FLUSH,
+            null,
+            "leafy_msg_$messageId"
+        )
+        if (result == TextToSpeech.ERROR) {
+            _speakingMessageId.value = null
         }
     }
 
@@ -84,6 +109,7 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
     }
 
     fun stop() {
+        pendingUtterance = null
         try {
             tts?.stop()
         } catch (_: Exception) {
@@ -92,6 +118,7 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
     }
 
     fun shutdown() {
+        pendingUtterance = null
         try {
             tts?.stop()
             tts?.shutdown()

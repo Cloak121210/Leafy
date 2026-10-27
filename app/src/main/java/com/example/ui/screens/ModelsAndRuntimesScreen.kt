@@ -453,6 +453,7 @@ fun RuntimesScreen(
         ) { runtime ->
             val isSelected = runtime == uiState.activeRuntime
             val accent = runtimeAccentColor(runtime)
+            val compatibleModels = uiState.localModels.filter { runtime.isCompatibleWithModel(it) }
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -509,6 +510,19 @@ fun RuntimesScreen(
                             fontFamily = JetBrainsMonoFontFamily
                         ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Text(
+                        text = if (compatibleModels.isNotEmpty()) {
+                            "Compatible on device (${compatibleModels.size}): ${compatibleModels.joinToString { it.name }}"
+                        } else {
+                            "Compatible on device: 0 (Requires ${runtime.fileExtensions.joinToString(" or ")} model file)"
+                        },
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = if (compatibleModels.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     Button(

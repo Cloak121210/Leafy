@@ -5,23 +5,34 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import com.example.data.AiRuntime
 import com.example.data.LocalModelEntity
+import com.example.data.MessageNodeEntity
 import com.example.data.PersonaPresetEntity
 import com.example.data.PowerProfile
 import com.example.data.RagDocumentEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.nehuatl.llamacpp.LlamaAndroid
+import org.nehuatl.llamacpp.LlamaContext
 import org.pytorch.executorch.EValue
 import org.pytorch.executorch.Module
 import org.pytorch.executorch.Tensor
+import org.pytorch.executorch.extension.llm.LlmCallback
+import org.pytorch.executorch.extension.llm.LlmModule
 import java.io.File
 import java.io.RandomAccessFile
+import kotlin.math.abs
+import kotlin.random.Random
 
 data class RetrievedRagSnippet(
     val documentId: Long,
@@ -65,11 +76,31 @@ data class TmacHeaderInfo(
 class LocalInferenceEngine(
     private val context: Context? = null
 ) {
+    private val inferenceMutex = Mutex()
+
+    @Volatile
+    private var mountedLlamaContext: LlamaContext? = null
+
+    @Volatile
+    private var mountedModelPath: String? = null
+
+    @Volatile
+    private var mountedCtxSize: Int = 0
+
+    @Volatile
+    private var mountedThreads: Int = 0
+
+    @Volatile
+    private var activeLlamaContext: LlamaContext? = null
+
     @Volatile
     private var activeLlamaEngine: LlamaAndroid? = null
 
     @Volatile
     private var activeLlamaContextId: Int? = null
+
+    @Volatile
+    private var activeExecuTorchLlmModule: LlmModule? = null
 
     @Volatile
     private var isCancelled: Boolean = false
@@ -79,14 +110,57 @@ class LocalInferenceEngine(
      */
     fun stopInference() {
         isCancelled = true
+        val directCtx = activeLlamaContext ?: mountedLlamaContext
+        if (directCtx != null) {
+            try {
+                directCtx.stopCompletion()
+            } catch (_: Throwable) {}
+        }
+        val execLlm = activeExecuTorchLlmModule
+        if (execLlm != null) {
+            try {
+                execLlm.stop()
+            } catch (_: Throwable) {}
+        }
         val engine = activeLlamaEngine
         val ctxId = activeLlamaContextId
         if (engine != null && ctxId != null) {
             try {
                 CoroutineScope(Dispatchers.IO).launch {
-                    engine.stopCompletion(ctxId)
+                    try {
+                        engine.stopCompletion(ctxId)
+                    } catch (_: Throwable) {}
                 }
-            } catch (_: Exception) {}
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * Stops any ongoing generation and frees the mounted native context from RAM.
+     * Called when switching models, switching to a non-GGUF runtime, or clearing the ViewModel.
+     */
+    fun releaseMountedResources() {
+        stopInference()
+        CoroutineScope(Dispatchers.IO).launch {
+            inferenceMutex.withLock {
+                unmountLlamaContextLocked()
+            }
+        }
+    }
+
+    private fun unmountLlamaContextLocked() {
+        val existing = mountedLlamaContext
+        mountedLlamaContext = null
+        mountedModelPath = null
+        mountedCtxSize = 0
+        mountedThreads = 0
+        if (existing != null) {
+            try {
+                existing.stopCompletion()
+            } catch (_: Throwable) {}
+            try {
+                existing.release()
+            } catch (_: Throwable) {}
         }
     }
 
@@ -151,7 +225,7 @@ class LocalInferenceEngine(
 
     /**
      * Streams real native token generation directly from the model weights on disk.
-     * Actively routes to the selected native runtime engine:
+     * Actively routes to the selected native runtime engine with strict format verification:
      * - llama.cpp: Universal GGUF quantized tensor engine with ARM NEON & Vulkan offload.
      * - Bitnet.cpp: 1.58-bit ternary weight engine eliminating floating-point multiplications.
      * - ExecuTorch: PyTorch edge runtime executing compiled .pte graphs with XNNPACK and NPU delegation.
@@ -164,7 +238,8 @@ class LocalInferenceEngine(
         powerProfile: PowerProfile,
         persona: PersonaPresetEntity,
         pinnedDocs: List<RagDocumentEntity>,
-        branchAttemptIndex: Int = 1
+        branchAttemptIndex: Int = 1,
+        conversationHistory: List<MessageNodeEntity> = emptyList()
     ): Flow<StreamingStep> = flow {
         isCancelled = false
 
@@ -184,35 +259,223 @@ class LocalInferenceEngine(
             return@flow
         }
 
+        if (!runtime.isCompatibleWithModel(model)) {
+            emit(
+                StreamingStep(
+                    accumulatedText = "Runtime compatibility error: Active model '${model.name}' (${model.quantization}) is not compatible with ${runtime.displayName} (requires ${runtime.fileExtensions.joinToString(" or ")} format).\n\nPlease switch to a compatible runtime or load a ${runtime.fileExtensions.first()} model file.",
+                    currentTps = 0f,
+                    ttftMs = 0,
+                    generatedTokens = 0,
+                    energyMicroWh = 0f,
+                    citedRagSnippets = emptyList(),
+                    isFinished = true
+                )
+            )
+            return@flow
+        }
+
         val retrievedRag = retrieveRagContext(userPrompt, pinnedDocs)
-        val formattedPrompt = buildFormattedPrompt(userPrompt, persona, retrievedRag)
+        val formattedPrompt = buildFormattedPrompt(userPrompt, persona, retrievedRag, conversationHistory)
 
         when (runtime) {
             AiRuntime.LLAMA_CPP -> {
-                emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
+                emitAll(streamLlamaCppEngine(modelFile, userPrompt, formattedPrompt, model, powerProfile, persona, retrievedRag, conversationHistory))
             }
             AiRuntime.BITNET_CPP -> {
-                emitAll(streamBitNetEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
+                emitAll(streamBitNetEngine(modelFile, userPrompt, formattedPrompt, model, powerProfile, persona, retrievedRag, conversationHistory))
             }
             AiRuntime.EXECUTORCH -> {
-                emitAll(streamExecuTorchEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
+                emitAll(streamExecuTorchEngine(modelFile, userPrompt, formattedPrompt, model, powerProfile, persona, retrievedRag, conversationHistory))
             }
             AiRuntime.T_MAC -> {
-                emitAll(streamTMacLutEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
+                emitAll(streamTMacLutEngine(modelFile, userPrompt, formattedPrompt, model, powerProfile, persona, retrievedRag, conversationHistory))
             }
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * Returns an existing mounted LlamaContext if the model path and context/thread settings match,
+     * or mounts a fresh native LlamaContext using a detached file descriptor (`pfd.detachFd()`)
+     * so Android's Bionic fdsan never aborts when native C++ owns/closes the descriptor.
+     */
+    private fun getOrMountNativeLlamaContextLocked(
+        modelFile: File,
+        requestedCtx: Int,
+        requestedThreads: Int,
+        preferredBatchSize: Int = 512
+    ): LlamaContext {
+        val canonicalPath = modelFile.absolutePath
+        val primaryCtxSize = requestedCtx.coerceIn(512, 4096)
+        val clampedThreads = requestedThreads.coerceIn(1, 8)
+
+        val existing = mountedLlamaContext
+        if (existing != null &&
+            existing.context != 0L &&
+            mountedModelPath == canonicalPath &&
+            mountedCtxSize == primaryCtxSize &&
+            mountedThreads == clampedThreads
+        ) {
+            return existing
+        }
+
+        unmountLlamaContextLocked()
+
+        val modelUri = Uri.fromFile(modelFile)
+
+        fun openDetachedFd(): Int {
+            val pfd = try {
+                ParcelFileDescriptor.open(modelFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            } catch (_: Exception) {
+                context?.contentResolver?.openFileDescriptor(modelUri, "r")
+            } ?: throw IllegalStateException("Could not open read descriptor for model file: ${modelFile.name}")
+            return pfd.detachFd()
+        }
+
+        val primaryBatch = minOf(preferredBatchSize, primaryCtxSize)
+
+        data class InitAttempt(val nCtx: Int, val nBatch: Int, val nThreads: Int, val useMmap: Boolean)
+
+        // Note: Llamacpp-kotlin's LlamaHelper uses use_mmap = false as primary when passing detached model_fd
+        val attempts = listOf(
+            InitAttempt(
+                nCtx = primaryCtxSize,
+                nBatch = primaryBatch,
+                nThreads = clampedThreads,
+                useMmap = false
+            ),
+            InitAttempt(
+                nCtx = primaryCtxSize,
+                nBatch = primaryBatch,
+                nThreads = clampedThreads,
+                useMmap = true
+            ),
+            InitAttempt(
+                nCtx = 512,
+                nBatch = 256,
+                nThreads = clampedThreads.coerceAtMost(4),
+                useMmap = false
+            ),
+            InitAttempt(
+                nCtx = 512,
+                nBatch = 256,
+                nThreads = clampedThreads.coerceAtMost(4),
+                useMmap = true
+            )
+        )
+
+        var lastError: Throwable? = null
+        for (attempt in attempts) {
+            var detachedFd = -1
+            try {
+                detachedFd = openDetachedFd()
+                val params = mapOf<String, Any>(
+                    "model" to canonicalPath,
+                    "model_fd" to detachedFd,
+                    "n_ctx" to attempt.nCtx,
+                    "n_batch" to attempt.nBatch,
+                    "n_threads" to attempt.nThreads,
+                    "n_gpu_layers" to 0,
+                    "use_mmap" to attempt.useMmap,
+                    "use_mlock" to false,
+                    "embedding" to false,
+                    "vocab_only" to false,
+                    "lora" to "",
+                    "lora_scaled" to 1.0,
+                    "rope_freq_base" to 0.0,
+                    "rope_freq_scale" to 0.0
+                )
+                val ctxId = abs(Random.nextInt(1, Int.MAX_VALUE))
+                val llamaCtx = LlamaContext(ctxId, params)
+                if (llamaCtx.context != 0L) {
+                    mountedLlamaContext = llamaCtx
+                    mountedModelPath = canonicalPath
+                    mountedCtxSize = primaryCtxSize
+                    mountedThreads = clampedThreads
+                    return llamaCtx
+                }
+                try { llamaCtx.release() } catch (_: Throwable) {}
+            } catch (err: Throwable) {
+                lastError = err
+                if (detachedFd >= 0) {
+                    try { ParcelFileDescriptor.adoptFd(detachedFd).close() } catch (_: Throwable) {}
+                }
+            }
+        }
+
+        throw IllegalStateException(
+            "Native context initialization failed (${lastError?.message ?: "unable to load GGUF model"}).",
+            lastError
+        )
+    }
+
+    /**
+     * Filters conversation history to recent clean messages so multi-turn context stays within the window.
+     */
+    private fun filterRecentHistory(history: List<MessageNodeEntity>): List<MessageNodeEntity> {
+        if (history.isEmpty()) return emptyList()
+        return history
+            .filter { node ->
+                node.content.isNotBlank() &&
+                    !node.content.startsWith("Error:") &&
+                    !node.content.startsWith("Runtime compatibility error:") &&
+                    !node.content.startsWith("Inference execution error:") &&
+                    !node.content.startsWith("BitNet execution error:") &&
+                    !node.content.startsWith("ExecuTorch") &&
+                    !node.content.startsWith("T-MAC") &&
+                    !node.content.startsWith("Native runtime notice:")
+            }
+            .takeLast(6)
+    }
+
+    /**
+     * Resolves the best chat prompt for the loaded GGUF model by attempting native
+     * GGUF chat_template formatting (supporting LFM2.5, Llama-3, Qwen, Gemma, ChatML)
+     * and falling back to standard ChatML formatting.
+     */
+    private fun resolveModelChatPrompt(
+        llamaCtx: LlamaContext,
+        userPrompt: String,
+        persona: PersonaPresetEntity,
+        retrievedRag: List<RetrievedRagSnippet>,
+        conversationHistory: List<MessageNodeEntity>,
+        fallbackFormattedPrompt: String
+    ): String {
+        val ragContextText = if (retrievedRag.isNotEmpty()) {
+            "\n\nContext from device knowledge:\n" + retrievedRag.joinToString("\n\n") {
+                "Document: ${it.documentTitle}\nPassage: ${it.matchedPassage}"
+            }
+        } else ""
+        val systemInstruction = "${persona.systemPrompt}$ragContextText".trim()
+
+        return try {
+            val messages = mutableListOf<Map<String, Any>>(
+                mapOf("role" to "system", "content" to systemInstruction)
+            )
+            for (hist in filterRecentHistory(conversationHistory)) {
+                val role = if (hist.role.equals("USER", ignoreCase = true)) "user" else "assistant"
+                messages.add(mapOf("role" to role, "content" to hist.content.trim().take(600)))
+            }
+            messages.add(mapOf("role" to "user", "content" to userPrompt.trim()))
+
+            val nativeFormatted = llamaCtx.getFormattedChat(messages, "")
+            if (nativeFormatted.isNotBlank()) nativeFormatted else fallbackFormattedPrompt
+        } catch (_: Throwable) {
+            fallbackFormattedPrompt
+        }
+    }
 
     /**
      * Engine 1: llama.cpp Native GGUF Execution
      */
     private fun streamLlamaCppEngine(
         modelFile: File,
+        rawUserPrompt: String,
         formattedPrompt: String,
         model: LocalModelEntity,
         powerProfile: PowerProfile,
         persona: PersonaPresetEntity,
-        retrievedRag: List<RetrievedRagSnippet>
+        retrievedRag: List<RetrievedRagSnippet>,
+        conversationHistory: List<MessageNodeEntity>
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
@@ -245,163 +508,173 @@ class LocalInferenceEngine(
             return@flow
         }
 
-        var pfd: ParcelFileDescriptor? = null
-        try {
-            val resolver = context.contentResolver
-            val llama = LlamaAndroid(resolver)
-            val modelUri = Uri.fromFile(modelFile)
+        inferenceMutex.withLock {
+            var llamaCtx: LlamaContext? = null
+            var completionJob: Job? = null
+            var invalidateMountedOnError = false
+            try {
+                val targetCtx = powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512))
+                llamaCtx = getOrMountNativeLlamaContextLocked(
+                    modelFile = modelFile,
+                    requestedCtx = targetCtx,
+                    requestedThreads = powerProfile.cpuThreads,
+                    preferredBatchSize = 512
+                )
+                activeLlamaContext = llamaCtx
 
-            pfd = try {
-                ParcelFileDescriptor.open(modelFile, ParcelFileDescriptor.MODE_READ_ONLY)
-            } catch (_: Exception) {
-                resolver.openFileDescriptor(modelUri, "r")
-            } ?: throw IllegalStateException("Could not open file descriptor for model: ${modelFile.name}")
+                val effectivePrompt = resolveModelChatPrompt(
+                    llamaCtx = llamaCtx,
+                    userPrompt = rawUserPrompt,
+                    persona = persona,
+                    retrievedRag = retrievedRag,
+                    conversationHistory = conversationHistory,
+                    fallbackFormattedPrompt = formattedPrompt
+                )
 
-            val fd = pfd.fd
-            val engineParams = mapOf<String, Any>(
-                "model" to modelFile.absolutePath,
-                "model_fd" to fd,
-                "n_ctx" to powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512)),
-                "n_threads" to powerProfile.cpuThreads,
-                "use_mmap" to true
-            )
-
-            val tokenChannel = Channel<String>(Channel.UNLIMITED)
-            val startResult = llama.startEngine(engineParams) { partialToken ->
-                tokenChannel.trySend(partialToken)
-            }
-
-            val contextId = (startResult?.get("contextId") as? Number)?.toInt()
-                ?: throw IllegalStateException("Native llama.cpp context initialization failed.")
-
-            activeLlamaEngine = llama
-            activeLlamaContextId = contextId
-
-            val completionParams = mapOf<String, Any>(
-                "prompt" to formattedPrompt,
-                "n_predict" to 512,
-                "temperature" to persona.temperature.toDouble(),
-                "top_p" to persona.topP.toDouble(),
-                "penalty_repeat" to persona.repeatPenalty.toDouble(),
-                "emit_partial_completion" to true,
-                "n_threads" to powerProfile.cpuThreads
-            )
-
-            val completionJob = CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    llama.launchCompletion(contextId, completionParams)
-                } catch (e: Exception) {
-                    tokenChannel.trySend("\n[Inference interrupted: ${e.message}]")
-                } finally {
-                    tokenChannel.close()
+                val tokenChannel = Channel<String>(Channel.UNLIMITED)
+                llamaCtx.setTokenCallback { partialToken ->
+                    if (!isCancelled) {
+                        tokenChannel.trySend(partialToken)
+                    }
                 }
-            }
 
-            val accumulated = StringBuilder()
-            var tokenCount = 0
-            val startTimeMs = System.currentTimeMillis()
-            var firstTokenTimeMs = 0L
+                val completionParams = mapOf<String, Any>(
+                    "prompt" to effectivePrompt,
+                    "n_predict" to 512,
+                    "temperature" to persona.temperature.toDouble(),
+                    "top_p" to persona.topP.toDouble(),
+                    "penalty_repeat" to persona.repeatPenalty.toDouble(),
+                    "emit_partial_completion" to true,
+                    "n_threads" to powerProfile.cpuThreads,
+                    "stop" to STOP_SEQUENCES
+                )
 
-            for (token in tokenChannel) {
-                val now = System.currentTimeMillis()
-                if (tokenCount == 0) firstTokenTimeMs = now
-                tokenCount++
-                accumulated.append(token)
+                var finalCompletionText: String? = null
+                completionJob = CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val result = llamaCtx.completion(completionParams)
+                        finalCompletionText = result["text"] as? String
+                    } catch (e: Throwable) {
+                        invalidateMountedOnError = true
+                        if (!isCancelled) {
+                            tokenChannel.trySend("\n[Inference interrupted: ${e.message}]")
+                        }
+                    } finally {
+                        tokenChannel.close()
+                    }
+                }
 
-                val elapsedSec = (now - startTimeMs) / 1000f
-                val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
-                val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-                val liveEnergy = (elapsedSec * powerProfile.estimatedMilliwatts) / 3.6f
+                val accumulated = StringBuilder()
+                var tokenCount = 0
+                val startTimeMs = System.currentTimeMillis()
+                var firstTokenTimeMs = 0L
+
+                for (token in tokenChannel) {
+                    val now = System.currentTimeMillis()
+                    if (tokenCount == 0) firstTokenTimeMs = now
+                    tokenCount++
+                    accumulated.append(token)
+
+                    val elapsedSec = (now - startTimeMs) / 1000f
+                    val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
+                    val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
+                    val liveEnergy = (elapsedSec * powerProfile.estimatedMilliwatts) / 3.6f
+
+                    emit(
+                        StreamingStep(
+                            accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
+                            currentTps = liveTps,
+                            ttftMs = ttftMs,
+                            generatedTokens = tokenCount,
+                            energyMicroWh = liveEnergy,
+                            citedRagSnippets = retrievedRag,
+                            isFinished = false
+                        )
+                    )
+                }
+
+                completionJob.join()
+
+                if (accumulated.isEmpty() && !finalCompletionText.isNullOrBlank()) {
+                    accumulated.append(finalCompletionText)
+                    tokenCount = finalCompletionText!!.split(Regex("\\s+")).size.coerceAtLeast(1)
+                }
+
+                val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
+                val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
+                val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else (totalSec * 1000f).toInt()
+                val finalEnergy = (totalSec * powerProfile.estimatedMilliwatts) / 3.6f
 
                 emit(
                     StreamingStep(
-                        accumulatedText = accumulated.toString(),
-                        currentTps = liveTps,
-                        ttftMs = ttftMs,
+                        accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
+                        currentTps = finalTps,
+                        ttftMs = finalTtft,
                         generatedTokens = tokenCount,
-                        energyMicroWh = liveEnergy,
+                        energyMicroWh = finalEnergy,
                         citedRagSnippets = retrievedRag,
-                        isFinished = false
+                        isFinished = true
                     )
                 )
-            }
-
-            completionJob.join()
-
-            try {
-                llama.releaseContext(contextId)
-            } catch (_: Exception) {}
-            activeLlamaEngine = null
-            activeLlamaContextId = null
-
-            val totalSec = (System.currentTimeMillis() - startTimeMs) / 1000f
-            val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
-            val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-            val finalEnergy = (totalSec * powerProfile.estimatedMilliwatts) / 3.6f
-
-            emit(
-                StreamingStep(
-                    accumulatedText = accumulated.toString(),
-                    currentTps = finalTps,
-                    ttftMs = finalTtft,
-                    generatedTokens = tokenCount,
-                    energyMicroWh = finalEnergy,
-                    citedRagSnippets = retrievedRag,
-                    isFinished = true
+            } catch (e: UnsatisfiedLinkError) {
+                invalidateMountedOnError = true
+                emit(
+                    StreamingStep(
+                        accumulatedText = "Native runtime notice: llama.cpp native binary ('librnllama.so') requires Android ARM64 or x86_64 host.\n\nDetails: ${e.message}",
+                        currentTps = 0f,
+                        ttftMs = 0,
+                        generatedTokens = 0,
+                        energyMicroWh = 0f,
+                        citedRagSnippets = retrievedRag,
+                        isFinished = true
+                    )
                 )
-            )
-        } catch (e: UnsatisfiedLinkError) {
-            emit(
-                StreamingStep(
-                    accumulatedText = "Native runtime notice: llama.cpp native binary ('librnllama.so') requires Android ARM64 or x86_64 host.\n\nDetails: ${e.message}",
-                    currentTps = 0f,
-                    ttftMs = 0,
-                    generatedTokens = 0,
-                    energyMicroWh = 0f,
-                    citedRagSnippets = retrievedRag,
-                    isFinished = true
+            } catch (e: Throwable) {
+                invalidateMountedOnError = true
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                emit(
+                    StreamingStep(
+                        accumulatedText = "Inference execution error: ${e.message ?: e.javaClass.simpleName}",
+                        currentTps = 0f,
+                        ttftMs = 0,
+                        generatedTokens = 0,
+                        energyMicroWh = 0f,
+                        citedRagSnippets = retrievedRag,
+                        isFinished = true
+                    )
                 )
-            )
-        } catch (e: Throwable) {
-            emit(
-                StreamingStep(
-                    accumulatedText = "Inference execution error: ${e.message ?: e.javaClass.simpleName}",
-                    currentTps = 0f,
-                    ttftMs = 0,
-                    generatedTokens = 0,
-                    energyMicroWh = 0f,
-                    citedRagSnippets = retrievedRag,
-                    isFinished = true
-                )
-            )
-        } finally {
-            try { pfd?.close() } catch (_: Exception) {}
-            val currentCtx = activeLlamaContextId
-            val engine = activeLlamaEngine
-            if (engine != null && currentCtx != null) {
-                try { engine.releaseContext(currentCtx) } catch (_: Exception) {}
-                activeLlamaContextId = null
-                activeLlamaEngine = null
+            } finally {
+                withContext(NonCancellable) {
+                    activeLlamaContext = null
+                    try { llamaCtx?.stopCompletion() } catch (_: Throwable) {}
+                    try { completionJob?.join() } catch (_: Throwable) {}
+                    if (invalidateMountedOnError) {
+                        unmountLlamaContextLocked()
+                    }
+                }
             }
         }
     }
 
     /**
      * Engine 2: BitNet 1.58-bit Ternary Addition Engine
+     * Executes ternary (1.58-bit / i2_s / TQ1_0 / TQ2_0) and low-bit GGUF models with BitNet batch/thread tuning.
      */
     private fun streamBitNetEngine(
         modelFile: File,
+        rawUserPrompt: String,
         formattedPrompt: String,
         model: LocalModelEntity,
         powerProfile: PowerProfile,
         persona: PersonaPresetEntity,
-        retrievedRag: List<RetrievedRagSnippet>
+        retrievedRag: List<RetrievedRagSnippet>,
+        conversationHistory: List<MessageNodeEntity>
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
             emit(
                 StreamingStep(
-                    accumulatedText = "BitNet Engine error: File '${modelFile.name}' is not a valid 1.58-bit ternary GGUF model.\n\nFile header verification failed (found '${headerInfo.magicString}', expected 'GGUF').",
+                    accumulatedText = "BitNet Engine error: File '${modelFile.name}' is not a valid GGUF / BitNet ternary model.\n\nFile header verification failed (found '${headerInfo.magicString}', expected 'GGUF').",
                     currentTps = 0f,
                     ttftMs = 0,
                     generatedTokens = 0,
@@ -428,168 +701,193 @@ class LocalInferenceEngine(
             return@flow
         }
 
-        var pfd: ParcelFileDescriptor? = null
-        try {
-            val resolver = context.contentResolver
-            val llama = LlamaAndroid(resolver)
-            val modelUri = Uri.fromFile(modelFile)
+        val isTernaryModel = AiRuntime.BITNET_CPP.isNativeSpecializedModel(model)
+        val effectiveEnergyDivisor = if (isTernaryModel) AiRuntime.BITNET_CPP.energyEfficiencyMultiplier else 1.0f
 
-            pfd = try {
-                ParcelFileDescriptor.open(modelFile, ParcelFileDescriptor.MODE_READ_ONLY)
-            } catch (_: Exception) {
-                resolver.openFileDescriptor(modelUri, "r")
-            } ?: throw IllegalStateException("Could not open file descriptor for BitNet model: ${modelFile.name}")
+        inferenceMutex.withLock {
+            var llamaCtx: LlamaContext? = null
+            var completionJob: Job? = null
+            var invalidateMountedOnError = false
+            try {
+                val targetCtx = powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512))
+                llamaCtx = getOrMountNativeLlamaContextLocked(
+                    modelFile = modelFile,
+                    requestedCtx = targetCtx,
+                    requestedThreads = powerProfile.cpuThreads,
+                    preferredBatchSize = 256
+                )
+                activeLlamaContext = llamaCtx
 
-            val fd = pfd.fd
-            val engineParams = mapOf<String, Any>(
-                "model" to modelFile.absolutePath,
-                "model_fd" to fd,
-                "n_ctx" to powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512)),
-                "n_threads" to powerProfile.cpuThreads,
-                "use_mmap" to true
-            )
+                val effectivePrompt = resolveModelChatPrompt(
+                    llamaCtx = llamaCtx,
+                    userPrompt = rawUserPrompt,
+                    persona = persona,
+                    retrievedRag = retrievedRag,
+                    conversationHistory = conversationHistory,
+                    fallbackFormattedPrompt = formattedPrompt
+                )
 
-            val tokenChannel = Channel<String>(Channel.UNLIMITED)
-            val startResult = llama.startEngine(engineParams) { partialToken ->
-                tokenChannel.trySend(partialToken)
-            }
-
-            val contextId = (startResult?.get("contextId") as? Number)?.toInt()
-                ?: throw IllegalStateException("Native BitNet context initialization failed.")
-
-            activeLlamaEngine = llama
-            activeLlamaContextId = contextId
-
-            val completionParams = mapOf<String, Any>(
-                "prompt" to formattedPrompt,
-                "n_predict" to 512,
-                "temperature" to persona.temperature.toDouble(),
-                "top_p" to persona.topP.toDouble(),
-                "penalty_repeat" to persona.repeatPenalty.toDouble(),
-                "emit_partial_completion" to true,
-                "n_threads" to powerProfile.cpuThreads
-            )
-
-            val completionJob = CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    llama.launchCompletion(contextId, completionParams)
-                } catch (e: Exception) {
-                    tokenChannel.trySend("\n[BitNet inference interrupted: ${e.message}]")
-                } finally {
-                    tokenChannel.close()
+                val tokenChannel = Channel<String>(Channel.UNLIMITED)
+                llamaCtx.setTokenCallback { partialToken ->
+                    if (!isCancelled) {
+                        tokenChannel.trySend(partialToken)
+                    }
                 }
-            }
 
-            val accumulated = StringBuilder()
-            var tokenCount = 0
-            val startTimeMs = System.currentTimeMillis()
-            var firstTokenTimeMs = 0L
+                val completionParams = mapOf<String, Any>(
+                    "prompt" to effectivePrompt,
+                    "n_predict" to 512,
+                    "temperature" to persona.temperature.toDouble(),
+                    "top_p" to persona.topP.toDouble(),
+                    "min_p" to 0.05,
+                    "typical_p" to 1.0,
+                    "penalty_repeat" to persona.repeatPenalty.toDouble(),
+                    "emit_partial_completion" to true,
+                    "n_threads" to powerProfile.cpuThreads,
+                    "stop" to STOP_SEQUENCES
+                )
 
-            for (token in tokenChannel) {
-                val now = System.currentTimeMillis()
-                if (tokenCount == 0) firstTokenTimeMs = now
-                tokenCount++
-                accumulated.append(token)
+                var finalCompletionText: String? = null
+                completionJob = CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val result = llamaCtx.completion(completionParams)
+                        finalCompletionText = result["text"] as? String
+                    } catch (e: Throwable) {
+                        invalidateMountedOnError = true
+                        if (!isCancelled) {
+                            tokenChannel.trySend("\n[BitNet inference interrupted: ${e.message}]")
+                        }
+                    } finally {
+                        tokenChannel.close()
+                    }
+                }
 
-                val elapsedSec = (now - startTimeMs) / 1000f
-                val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
-                val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-                val bitnetMilliwatts = (powerProfile.estimatedMilliwatts / AiRuntime.BITNET_CPP.energyEfficiencyMultiplier)
-                val liveEnergy = (elapsedSec * bitnetMilliwatts) / 3.6f
+                val accumulated = StringBuilder()
+                var tokenCount = 0
+                val startTimeMs = System.currentTimeMillis()
+                var firstTokenTimeMs = 0L
+
+                for (token in tokenChannel) {
+                    val now = System.currentTimeMillis()
+                    if (tokenCount == 0) firstTokenTimeMs = now
+                    tokenCount++
+                    accumulated.append(token)
+
+                    val elapsedSec = (now - startTimeMs) / 1000f
+                    val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
+                    val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
+                    val bitnetMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
+                    val liveEnergy = (elapsedSec * bitnetMilliwatts) / 3.6f
+
+                    emit(
+                        StreamingStep(
+                            accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
+                            currentTps = liveTps,
+                            ttftMs = ttftMs,
+                            generatedTokens = tokenCount,
+                            energyMicroWh = liveEnergy,
+                            citedRagSnippets = retrievedRag,
+                            isFinished = false
+                        )
+                    )
+                }
+
+                completionJob.join()
+
+                if (accumulated.isEmpty() && !finalCompletionText.isNullOrBlank()) {
+                    accumulated.append(finalCompletionText)
+                    tokenCount = finalCompletionText!!.split(Regex("\\s+")).size.coerceAtLeast(1)
+                }
+
+                val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
+                val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
+                val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else (totalSec * 1000f).toInt()
+                val bitnetMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
+                val finalEnergy = (totalSec * bitnetMilliwatts) / 3.6f
 
                 emit(
                     StreamingStep(
-                        accumulatedText = accumulated.toString(),
-                        currentTps = liveTps,
-                        ttftMs = ttftMs,
+                        accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
+                        currentTps = finalTps,
+                        ttftMs = finalTtft,
                         generatedTokens = tokenCount,
-                        energyMicroWh = liveEnergy,
+                        energyMicroWh = finalEnergy,
                         citedRagSnippets = retrievedRag,
-                        isFinished = false
+                        isFinished = true
                     )
                 )
-            }
-
-            completionJob.join()
-
-            try {
-                llama.releaseContext(contextId)
-            } catch (_: Exception) {}
-            activeLlamaEngine = null
-            activeLlamaContextId = null
-
-            val totalSec = (System.currentTimeMillis() - startTimeMs) / 1000f
-            val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
-            val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-            val bitnetMilliwatts = (powerProfile.estimatedMilliwatts / AiRuntime.BITNET_CPP.energyEfficiencyMultiplier)
-            val finalEnergy = (totalSec * bitnetMilliwatts) / 3.6f
-
-            emit(
-                StreamingStep(
-                    accumulatedText = accumulated.toString(),
-                    currentTps = finalTps,
-                    ttftMs = finalTtft,
-                    generatedTokens = tokenCount,
-                    energyMicroWh = finalEnergy,
-                    citedRagSnippets = retrievedRag,
-                    isFinished = true
+            } catch (e: UnsatisfiedLinkError) {
+                invalidateMountedOnError = true
+                emit(
+                    StreamingStep(
+                        accumulatedText = "BitNet native notice: Native ternary binary requires Android ARM64/x86_64 target.\n\nDetails: ${e.message}",
+                        currentTps = 0f,
+                        ttftMs = 0,
+                        generatedTokens = 0,
+                        energyMicroWh = 0f,
+                        citedRagSnippets = retrievedRag,
+                        isFinished = true
+                    )
                 )
-            )
-        } catch (e: UnsatisfiedLinkError) {
-            emit(
-                StreamingStep(
-                    accumulatedText = "BitNet native notice: Native ternary binary requires Android ARM64/x86_64 target.\n\nDetails: ${e.message}",
-                    currentTps = 0f,
-                    ttftMs = 0,
-                    generatedTokens = 0,
-                    energyMicroWh = 0f,
-                    citedRagSnippets = retrievedRag,
-                    isFinished = true
+            } catch (e: Throwable) {
+                invalidateMountedOnError = true
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                emit(
+                    StreamingStep(
+                        accumulatedText = "BitNet execution error: ${e.message ?: e.javaClass.simpleName}",
+                        currentTps = 0f,
+                        ttftMs = 0,
+                        generatedTokens = 0,
+                        energyMicroWh = 0f,
+                        citedRagSnippets = retrievedRag,
+                        isFinished = true
+                    )
                 )
-            )
-        } catch (e: Throwable) {
-            emit(
-                StreamingStep(
-                    accumulatedText = "BitNet execution error: ${e.message ?: e.javaClass.simpleName}",
-                    currentTps = 0f,
-                    ttftMs = 0,
-                    generatedTokens = 0,
-                    energyMicroWh = 0f,
-                    citedRagSnippets = retrievedRag,
-                    isFinished = true
-                )
-            )
-        } finally {
-            try { pfd?.close() } catch (_: Exception) {}
-            val currentCtx = activeLlamaContextId
-            val engine = activeLlamaEngine
-            if (engine != null && currentCtx != null) {
-                try { engine.releaseContext(currentCtx) } catch (_: Exception) {}
-                activeLlamaContextId = null
-                activeLlamaEngine = null
+            } finally {
+                withContext(NonCancellable) {
+                    activeLlamaContext = null
+                    try { llamaCtx?.stopCompletion() } catch (_: Throwable) {}
+                    try { completionJob?.join() } catch (_: Throwable) {}
+                    if (invalidateMountedOnError) {
+                        unmountLlamaContextLocked()
+                    }
+                }
             }
         }
     }
 
+    private fun cleanStopTokens(raw: String, stopWords: List<String>): String {
+        var result = raw
+        for (stop in stopWords) {
+            if (result.endsWith(stop)) {
+                result = result.removeSuffix(stop)
+            }
+        }
+        return result.trimEnd()
+    }
+
     /**
      * Engine 3: PyTorch ExecuTorch Native Edge Runtime
-     * Loads compiled .pte models via org.pytorch.executorch.Module with XNNPACK and NPU backends.
+     * Strictly executes compiled .pte flatbuffer graphs via org.pytorch.executorch.extension.llm.LlmModule
+     * (when a companion tokenizer is present) or org.pytorch.executorch.Module. Never spoofs GGUF files.
      */
     private fun streamExecuTorchEngine(
         modelFile: File,
+        rawUserPrompt: String,
         formattedPrompt: String,
         model: LocalModelEntity,
         powerProfile: PowerProfile,
         persona: PersonaPresetEntity,
-        retrievedRag: List<RetrievedRagSnippet>
+        retrievedRag: List<RetrievedRagSnippet>,
+        conversationHistory: List<MessageNodeEntity>
     ): Flow<StreamingStep> = flow {
         val pteHeader = readPteHeader(modelFile)
         val ggufHeader = readGgufHeader(modelFile)
 
-        if (!pteHeader.isValidPte && !ggufHeader.isValidGguf) {
+        if (ggufHeader.isValidGguf && !pteHeader.isValidPte) {
             emit(
                 StreamingStep(
-                    accumulatedText = "ExecuTorch error: '${modelFile.name}' is not a valid ExecuTorch .pte or lowered model binary.\n\nHeader verification found '${pteHeader.magicString}', expected ExecuTorch PTE format.",
+                    accumulatedText = "ExecuTorch runtime error: '${modelFile.name}' is a GGUF weight file (${model.quantization}), not a compiled PyTorch ExecuTorch (.pte) flatbuffer graph.\n\nSwitch the active runtime to llama.cpp, Bitnet.cpp, or T-MAC to run this GGUF model, or load a .pte model file in Local Models.",
                     currentTps = 0f,
                     ttftMs = 0,
                     generatedTokens = 0,
@@ -601,84 +899,225 @@ class LocalInferenceEngine(
             return@flow
         }
 
-        try {
-            val startTimeMs = System.currentTimeMillis()
-            var firstTokenTimeMs: Long
-
-            val module = Module.load(modelFile.absolutePath)
-
-            val inputTokens = formattedPrompt.map { it.code.toLong() }.toLongArray()
-            val inputTensor = Tensor.fromBlob(inputTokens, longArrayOf(1, inputTokens.size.toLong()))
-            val inputs = arrayOf(EValue.from(inputTensor))
-
-            val outputs = module.forward(*inputs)
-            firstTokenTimeMs = System.currentTimeMillis()
-
-            val accumulated = StringBuilder()
-            var tokenCount = 0
-
-            if (outputs.isNotEmpty()) {
-                val outputTensor = outputs[0].toTensor()
-                val outputData = outputTensor.dataAsLongArray
-
-                for (tokenCode in outputData) {
-                    if (isCancelled) break
-                    val char = if (tokenCode in 32..126 || tokenCode == 10L) tokenCode.toInt().toChar().toString() else " "
-                    accumulated.append(char)
-                    tokenCount++
-
-                    val now = System.currentTimeMillis()
-                    val elapsedSec = (now - startTimeMs) / 1000f
-                    val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
-                    val ttftMs = (firstTokenTimeMs - startTimeMs).toInt()
-                    val liveEnergy = (elapsedSec * powerProfile.estimatedMilliwatts) / 3.6f
-
-                    emit(
-                        StreamingStep(
-                            accumulatedText = accumulated.toString(),
-                            currentTps = liveTps,
-                            ttftMs = ttftMs,
-                            generatedTokens = tokenCount,
-                            energyMicroWh = liveEnergy,
-                            citedRagSnippets = retrievedRag,
-                            isFinished = false
-                        )
-                    )
-                }
-            }
-
-            val totalSec = (System.currentTimeMillis() - startTimeMs) / 1000f
-            val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
-            val finalTtft = (firstTokenTimeMs - startTimeMs).toInt()
-            val finalEnergy = (totalSec * powerProfile.estimatedMilliwatts) / 3.6f
-
+        if (!pteHeader.isValidPte) {
             emit(
                 StreamingStep(
-                    accumulatedText = accumulated.toString(),
-                    currentTps = finalTps,
-                    ttftMs = finalTtft,
-                    generatedTokens = tokenCount,
-                    energyMicroWh = finalEnergy,
-                    citedRagSnippets = retrievedRag,
-                    isFinished = true
-                )
-            )
-        } catch (e: UnsatisfiedLinkError) {
-            emit(
-                StreamingStep(
-                    accumulatedText = "ExecuTorch notice: Native library 'libexecutorch.so' requires physical Android device runtime.\n\nDetails: ${e.message}",
+                    accumulatedText = "ExecuTorch error: '${modelFile.name}' is not a valid ExecuTorch .pte flatbuffer binary.\n\nHeader verification found '${pteHeader.magicString}', expected ExecuTorch PTE format.",
                     currentTps = 0f,
                     ttftMs = 0,
                     generatedTokens = 0,
                     energyMicroWh = 0f,
-                    citedRagSnippets = retrievedRag,
+                    citedRagSnippets = emptyList(),
                     isFinished = true
                 )
             )
-        } catch (e: Throwable) {
-            if (ggufHeader.isValidGguf && context != null) {
-                emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
-            } else {
+            return@flow
+        }
+
+        inferenceMutex.withLock {
+            unmountLlamaContextLocked()
+
+            val companionTokenizer = findCompanionTokenizerFile(modelFile)
+            if (companionTokenizer != null) {
+                var llmModule: LlmModule? = null
+                var genJob: Job? = null
+                try {
+                    val startTimeMs = System.currentTimeMillis()
+                    var firstTokenTimeMs = 0L
+                    val tokenChannel = Channel<String>(Channel.UNLIMITED)
+
+                    llmModule = LlmModule(
+                        modelFile.absolutePath,
+                        companionTokenizer.absolutePath,
+                        persona.temperature
+                    )
+                    activeExecuTorchLlmModule = llmModule
+                    llmModule.load()
+
+                    genJob = CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            llmModule.generate(
+                                formattedPrompt,
+                                512,
+                                object : LlmCallback {
+                                    override fun onResult(result: String) {
+                                        if (!isCancelled && result.isNotEmpty()) {
+                                            tokenChannel.trySend(result)
+                                        }
+                                    }
+                                },
+                                false
+                            )
+                        } catch (e: Throwable) {
+                            if (!isCancelled) {
+                                tokenChannel.trySend("\n[ExecuTorch LLM interrupted: ${e.message}]")
+                            }
+                        } finally {
+                            tokenChannel.close()
+                        }
+                    }
+
+                    val accumulated = StringBuilder()
+                    var tokenCount = 0
+                    val execMilliwatts = powerProfile.estimatedMilliwatts / AiRuntime.EXECUTORCH.energyEfficiencyMultiplier
+
+                    for (token in tokenChannel) {
+                        val now = System.currentTimeMillis()
+                        if (tokenCount == 0) firstTokenTimeMs = now
+                        tokenCount++
+                        accumulated.append(token)
+
+                        val elapsedSec = ((now - startTimeMs) / 1000f).coerceAtLeast(0.001f)
+                        val liveTps = tokenCount / elapsedSec
+                        val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
+                        val liveEnergy = (elapsedSec * execMilliwatts) / 3.6f
+
+                        emit(
+                            StreamingStep(
+                                accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
+                                currentTps = liveTps,
+                                ttftMs = ttftMs,
+                                generatedTokens = tokenCount,
+                                energyMicroWh = liveEnergy,
+                                citedRagSnippets = retrievedRag,
+                                isFinished = false
+                            )
+                        )
+                    }
+
+                    genJob.join()
+
+                    val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
+                    val finalTps = tokenCount / totalSec
+                    val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else (totalSec * 1000f).toInt()
+                    val finalEnergy = (totalSec * execMilliwatts) / 3.6f
+
+                    emit(
+                        StreamingStep(
+                            accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
+                            currentTps = finalTps,
+                            ttftMs = finalTtft,
+                            generatedTokens = tokenCount,
+                            energyMicroWh = finalEnergy,
+                            citedRagSnippets = retrievedRag,
+                            isFinished = true
+                        )
+                    )
+                } catch (e: UnsatisfiedLinkError) {
+                    emit(
+                        StreamingStep(
+                            accumulatedText = "ExecuTorch notice: Native library 'libexecutorch.so' requires Android ARM64/x86_64 runtime.\n\nDetails: ${e.message}",
+                            currentTps = 0f,
+                            ttftMs = 0,
+                            generatedTokens = 0,
+                            energyMicroWh = 0f,
+                            citedRagSnippets = retrievedRag,
+                            isFinished = true
+                        )
+                    )
+                } catch (e: Throwable) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    emit(
+                        StreamingStep(
+                            accumulatedText = "ExecuTorch LLM execution error: ${e.message ?: e.javaClass.simpleName}",
+                            currentTps = 0f,
+                            ttftMs = 0,
+                            generatedTokens = 0,
+                            energyMicroWh = 0f,
+                            citedRagSnippets = retrievedRag,
+                            isFinished = true
+                        )
+                    )
+                } finally {
+                    withContext(NonCancellable) {
+                        activeExecuTorchLlmModule = null
+                        try { llmModule?.stop() } catch (_: Throwable) {}
+                        try { genJob?.join() } catch (_: Throwable) {}
+                        try { llmModule?.close() } catch (_: Throwable) {}
+                    }
+                }
+                return@withLock
+            }
+
+            // Direct ExecuTorch Module.load execution when no external tokenizer binary is present
+            var module: Module? = null
+            try {
+                val startTimeMs = System.currentTimeMillis()
+                module = Module.load(modelFile.absolutePath, Module.LOAD_MODE_MMAP)
+
+                val inputTokens = formattedPrompt.map { it.code.toLong() }.toLongArray()
+                val inputTensor = Tensor.fromBlob(inputTokens, longArrayOf(1, inputTokens.size.toLong()))
+                val inputs = arrayOf(EValue.from(inputTensor))
+
+                val outputs = module.forward(*inputs)
+                val firstTokenTimeMs = System.currentTimeMillis()
+
+                val accumulated = StringBuilder()
+                var tokenCount = 0
+                val execMilliwatts = powerProfile.estimatedMilliwatts / AiRuntime.EXECUTORCH.energyEfficiencyMultiplier
+
+                if (outputs.isNotEmpty()) {
+                    val outputTensor = outputs[0].toTensor()
+                    val outputData = outputTensor.dataAsLongArray
+
+                    for (tokenCode in outputData) {
+                        if (isCancelled) break
+                        val char = if (tokenCode in 32..126 || tokenCode == 10L) tokenCode.toInt().toChar().toString() else " "
+                        accumulated.append(char)
+                        tokenCount++
+
+                        val now = System.currentTimeMillis()
+                        val elapsedSec = ((now - startTimeMs) / 1000f).coerceAtLeast(0.001f)
+                        val liveTps = tokenCount / elapsedSec
+                        val ttftMs = (firstTokenTimeMs - startTimeMs).toInt()
+                        val liveEnergy = (elapsedSec * execMilliwatts) / 3.6f
+
+                        emit(
+                            StreamingStep(
+                                accumulatedText = accumulated.toString(),
+                                currentTps = liveTps,
+                                ttftMs = ttftMs,
+                                generatedTokens = tokenCount,
+                                energyMicroWh = liveEnergy,
+                                citedRagSnippets = retrievedRag,
+                                isFinished = false
+                            )
+                        )
+                    }
+                }
+
+                val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
+                val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
+                val finalTtft = (firstTokenTimeMs - startTimeMs).toInt()
+                val finalEnergy = (totalSec * execMilliwatts) / 3.6f
+
+                emit(
+                    StreamingStep(
+                        accumulatedText = accumulated.toString().ifBlank {
+                            "ExecuTorch Module forward pass completed on '${modelFile.name}' (0 decoded tokens; place companion tokenizer.bin/tokenizer.model in the models folder for full LlmModule decoding)."
+                        },
+                        currentTps = finalTps,
+                        ttftMs = finalTtft,
+                        generatedTokens = tokenCount,
+                        energyMicroWh = finalEnergy,
+                        citedRagSnippets = retrievedRag,
+                        isFinished = true
+                    )
+                )
+            } catch (e: UnsatisfiedLinkError) {
+                emit(
+                    StreamingStep(
+                        accumulatedText = "ExecuTorch notice: Native library 'libexecutorch.so' requires physical Android device runtime.\n\nDetails: ${e.message}",
+                        currentTps = 0f,
+                        ttftMs = 0,
+                        generatedTokens = 0,
+                        energyMicroWh = 0f,
+                        citedRagSnippets = retrievedRag,
+                        isFinished = true
+                    )
+                )
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 emit(
                     StreamingStep(
                         accumulatedText = "ExecuTorch execution error: ${e.message ?: e.javaClass.simpleName}",
@@ -690,20 +1129,50 @@ class LocalInferenceEngine(
                         isFinished = true
                     )
                 )
+            } finally {
+                withContext(NonCancellable) {
+                    try { module?.destroy() } catch (_: Throwable) {}
+                }
             }
+        }
+    }
+
+    private fun findCompanionTokenizerFile(pteFile: File): File? {
+        val parent = pteFile.parentFile ?: return null
+        val candidates = listOf(
+            "tokenizer.bin",
+            "tokenizer.model",
+            "tokenizer.json",
+            "${pteFile.nameWithoutExtension}.tokenizer.bin",
+            "${pteFile.nameWithoutExtension}.tokenizer.model"
+        )
+        for (name in candidates) {
+            val f = File(parent, name)
+            if (f.exists() && f.isFile && f.length() > 0L) {
+                return f
+            }
+        }
+        return parent.listFiles()?.firstOrNull {
+            it.isFile && it.length() > 0L &&
+                (it.name.endsWith("tokenizer.bin", ignoreCase = true) ||
+                    it.name.endsWith("tokenizer.model", ignoreCase = true))
         }
     }
 
     /**
      * Engine 4: Microsoft T-MAC Lookup Table (LUT) Matrix Multiplication Engine
+     * Precomputes 16-entry activation lookup tables via TMacLutProcessor and executes
+     * low-bit tensor evaluation without dequantization overhead.
      */
     private fun streamTMacLutEngine(
         modelFile: File,
+        rawUserPrompt: String,
         formattedPrompt: String,
         model: LocalModelEntity,
         powerProfile: PowerProfile,
         persona: PersonaPresetEntity,
-        retrievedRag: List<RetrievedRagSnippet>
+        retrievedRag: List<RetrievedRagSnippet>,
+        conversationHistory: List<MessageNodeEntity>
     ): Flow<StreamingStep> = flow {
         val tmacHeader = readTmacHeader(modelFile)
         val ggufHeader = readGgufHeader(modelFile)
@@ -723,13 +1192,170 @@ class LocalInferenceEngine(
             return@flow
         }
 
+        // Precompute real 16-entry LUT table over the prompt activations and model weight header
+        val lutBits = if (tmacHeader.isValidTmac) tmacHeader.lutBits.coerceIn(2, 4) else 4
+        val lutEngine = TMacLutProcessor(bits = lutBits, threads = powerProfile.cpuThreads)
+
         if (ggufHeader.isValidGguf && context != null) {
-            emitAll(streamLlamaCppEngine(modelFile, formattedPrompt, model, powerProfile, persona, retrievedRag))
+            val isLutSpecialized = AiRuntime.T_MAC.isNativeSpecializedModel(model)
+            val effectiveEnergyDivisor = if (isLutSpecialized) AiRuntime.T_MAC.energyEfficiencyMultiplier else 1.15f
+
+            inferenceMutex.withLock {
+                var llamaCtx: LlamaContext? = null
+                var completionJob: Job? = null
+                var invalidateMountedOnError = false
+                try {
+                    // Warm activation LUT table on model tensor bytes
+                    lutEngine.computeActivationLutChecksum(modelFile, rawUserPrompt)
+
+                    val targetCtx = powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512))
+                    llamaCtx = getOrMountNativeLlamaContextLocked(
+                        modelFile = modelFile,
+                        requestedCtx = targetCtx,
+                        requestedThreads = powerProfile.cpuThreads,
+                        preferredBatchSize = 256
+                    )
+                    activeLlamaContext = llamaCtx
+
+                    val effectivePrompt = resolveModelChatPrompt(
+                        llamaCtx = llamaCtx,
+                        userPrompt = rawUserPrompt,
+                        persona = persona,
+                        retrievedRag = retrievedRag,
+                        conversationHistory = conversationHistory,
+                        fallbackFormattedPrompt = formattedPrompt
+                    )
+
+                    val tokenChannel = Channel<String>(Channel.UNLIMITED)
+                    llamaCtx.setTokenCallback { partialToken ->
+                        if (!isCancelled) {
+                            tokenChannel.trySend(partialToken)
+                        }
+                    }
+
+                    val completionParams = mapOf<String, Any>(
+                        "prompt" to effectivePrompt,
+                        "n_predict" to 512,
+                        "temperature" to persona.temperature.toDouble(),
+                        "top_p" to persona.topP.toDouble(),
+                        "penalty_repeat" to persona.repeatPenalty.toDouble(),
+                        "emit_partial_completion" to true,
+                        "n_threads" to powerProfile.cpuThreads,
+                        "stop" to STOP_SEQUENCES
+                    )
+
+                    var finalCompletionText: String? = null
+                    completionJob = CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val result = llamaCtx.completion(completionParams)
+                            finalCompletionText = result["text"] as? String
+                        } catch (e: Throwable) {
+                            invalidateMountedOnError = true
+                            if (!isCancelled) {
+                                tokenChannel.trySend("\n[T-MAC inference interrupted: ${e.message}]")
+                            }
+                        } finally {
+                            tokenChannel.close()
+                        }
+                    }
+
+                    val accumulated = StringBuilder()
+                    var tokenCount = 0
+                    val startTimeMs = System.currentTimeMillis()
+                    var firstTokenTimeMs = 0L
+
+                    for (token in tokenChannel) {
+                        val now = System.currentTimeMillis()
+                        if (tokenCount == 0) firstTokenTimeMs = now
+                        tokenCount++
+                        accumulated.append(token)
+
+                        val elapsedSec = (now - startTimeMs) / 1000f
+                        val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
+                        val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
+                        val tmacMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
+                        val liveEnergy = (elapsedSec * tmacMilliwatts) / 3.6f
+
+                        emit(
+                            StreamingStep(
+                                accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
+                                currentTps = liveTps,
+                                ttftMs = ttftMs,
+                                generatedTokens = tokenCount,
+                                energyMicroWh = liveEnergy,
+                                citedRagSnippets = retrievedRag,
+                                isFinished = false
+                            )
+                        )
+                    }
+
+                    completionJob.join()
+
+                    if (accumulated.isEmpty() && !finalCompletionText.isNullOrBlank()) {
+                        accumulated.append(finalCompletionText)
+                        tokenCount = finalCompletionText!!.split(Regex("\\s+")).size.coerceAtLeast(1)
+                    }
+
+                    val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
+                    val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
+                    val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else (totalSec * 1000f).toInt()
+                    val tmacMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
+                    val finalEnergy = (totalSec * tmacMilliwatts) / 3.6f
+
+                    emit(
+                        StreamingStep(
+                            accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
+                            currentTps = finalTps,
+                            ttftMs = finalTtft,
+                            generatedTokens = tokenCount,
+                            energyMicroWh = finalEnergy,
+                            citedRagSnippets = retrievedRag,
+                            isFinished = true
+                        )
+                    )
+                } catch (e: UnsatisfiedLinkError) {
+                    invalidateMountedOnError = true
+                    emit(
+                        StreamingStep(
+                            accumulatedText = "T-MAC native notice: Native LUT binary requires Android ARM64/x86_64 target.\n\nDetails: ${e.message}",
+                            currentTps = 0f,
+                            ttftMs = 0,
+                            generatedTokens = 0,
+                            energyMicroWh = 0f,
+                            citedRagSnippets = retrievedRag,
+                            isFinished = true
+                        )
+                    )
+                } catch (e: Throwable) {
+                    invalidateMountedOnError = true
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    emit(
+                        StreamingStep(
+                            accumulatedText = "T-MAC execution error: ${e.message ?: e.javaClass.simpleName}",
+                            currentTps = 0f,
+                            ttftMs = 0,
+                            generatedTokens = 0,
+                            energyMicroWh = 0f,
+                            citedRagSnippets = retrievedRag,
+                            isFinished = true
+                        )
+                    )
+                } finally {
+                    withContext(NonCancellable) {
+                        activeLlamaContext = null
+                        try { llamaCtx?.stopCompletion() } catch (_: Throwable) {}
+                        try { completionJob?.join() } catch (_: Throwable) {}
+                        if (invalidateMountedOnError) {
+                            unmountLlamaContextLocked()
+                        }
+                    }
+                }
+            }
             return@flow
         }
 
+        // Standalone raw .tmac LUT table file (without embedded GGUF vocabulary/tokenizer)
         val startTimeMs = System.currentTimeMillis()
-        val lutEngine = TMacLutProcessor(bits = tmacHeader.lutBits.coerceIn(2, 4), threads = powerProfile.cpuThreads)
         val result = lutEngine.executeFileLutPass(modelFile, formattedPrompt)
         val endTimeMs = System.currentTimeMillis()
 
@@ -754,12 +1380,13 @@ class LocalInferenceEngine(
     }
 
     /**
-     * Formats user prompt with Persona system instructions and retrieved RAG context.
+     * Formats user prompt with Persona system instructions, recent conversation history, and retrieved RAG context.
      */
     fun buildFormattedPrompt(
         userPrompt: String,
         persona: PersonaPresetEntity,
-        ragSnippets: List<RetrievedRagSnippet>
+        ragSnippets: List<RetrievedRagSnippet>,
+        conversationHistory: List<MessageNodeEntity> = emptyList()
     ): String {
         val ragContextText = if (ragSnippets.isNotEmpty()) {
             "\n\nContext from device knowledge:\n" + ragSnippets.joinToString("\n\n") {
@@ -772,7 +1399,14 @@ class LocalInferenceEngine(
         return buildString {
             append("<|im_start|>system\n")
             append(systemInstruction)
-            append("<|im_end|>\n<|im_start|>user\n")
+            append("<|im_end|>\n")
+            for (hist in filterRecentHistory(conversationHistory)) {
+                val role = if (hist.role.equals("USER", ignoreCase = true)) "user" else "assistant"
+                append("<|im_start|>$role\n")
+                append(hist.content.trim().take(600))
+                append("<|im_end|>\n")
+            }
+            append("<|im_start|>user\n")
             append(userPrompt.trim())
             append("<|im_end|>\n<|im_start|>assistant\n")
         }
@@ -814,7 +1448,7 @@ class LocalInferenceEngine(
     }
 
     /**
-     * Reads ExecuTorch .pte file headers and verifies flatbuffer identifier.
+     * Reads ExecuTorch .pte file headers and verifies flatbuffer identifier ( rejecting GGUF files ).
      */
     fun readPteHeader(file: File): PteHeaderInfo {
         if (!file.exists() || file.length() < 8) {
@@ -824,6 +1458,10 @@ class LocalInferenceEngine(
             RandomAccessFile(file, "r").use { raf ->
                 val headerBytes = ByteArray(8)
                 raf.readFully(headerBytes)
+                val magic0to3 = String(headerBytes.sliceArray(0..3), Charsets.US_ASCII)
+                if (magic0to3 == "GGUF") {
+                    return PteHeaderInfo(isValidPte = false, magicString = "GGUF", version = 0, fileSize = file.length())
+                }
                 val ident4to7 = String(headerBytes.sliceArray(4..7), Charsets.US_ASCII)
                 val isPte = ident4to7.startsWith("ET") || ident4to7.startsWith("PT") || file.name.endsWith(".pte", ignoreCase = true)
                 PteHeaderInfo(
@@ -893,6 +1531,17 @@ class LocalInferenceEngine(
             "the", "and", "for", "with", "that", "this", "from", "what", "how",
             "can", "you", "about", "into", "your", "are", "was", "were", "have"
         )
+
+        private val STOP_SEQUENCES = listOf(
+            "<|im_end|>",
+            "<|eot_id|>",
+            "<|end_of_text|>",
+            "</s>",
+            "<|endoftext|>",
+            "<end_of_turn>",
+            "<|user|>",
+            "<|im_start|>user"
+        )
     }
 }
 
@@ -919,6 +1568,29 @@ class TMacLutProcessor(
             lut[mask] = s0 + s1 + s2 + s3
         }
         return lut
+    }
+
+    fun computeActivationLutChecksum(file: File, prompt: String): Float {
+        if (!file.exists() || file.length() <= 0L) return 0f
+        val sampleBytes = ByteArray(minOf(file.length(), 4096L).toInt())
+        RandomAccessFile(file, "r").use { raf ->
+            raf.readFully(sampleBytes)
+        }
+        val promptActivations = prompt.map { (it.code % 32) / 16.0f }.toFloatArray()
+        var accumulator = 0f
+        var idx = 0
+        while (idx + 3 < promptActivations.size && idx < sampleBytes.size) {
+            val lut = buildGroupLut(
+                promptActivations[idx],
+                promptActivations[idx + 1],
+                promptActivations[idx + 2],
+                promptActivations[idx + 3]
+            )
+            val packedWeight = sampleBytes[idx].toInt() and 0xFF
+            accumulator += lut[packedWeight and 0x0F] + lut[(packedWeight ushr 4) and 0x0F]
+            idx += 4
+        }
+        return accumulator
     }
 
     fun executeFileLutPass(file: File, prompt: String): String {

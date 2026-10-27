@@ -93,6 +93,7 @@ fun ChatStudioScreen(
     onStopStreaming: () -> Unit,
     onOpenSpecialMenu: () -> Unit,
     onNavigateToModels: () -> Unit,
+    onOpenRuntimeSwitcher: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -138,7 +139,7 @@ fun ChatStudioScreen(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Status bar showing active persona, pinned RAG count & battery telemetry
+        // Status bar showing active runtime, persona, pinned RAG count & battery telemetry
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -166,7 +167,7 @@ fun ChatStudioScreen(
                         modifier = Modifier.size(13.dp)
                     )
                     Text(
-                        text = "${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG pinned • ${uiState.telemetry.batteryPercent}%",
+                        text = "${uiState.activeRuntime.displayName} • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG pinned • ${uiState.telemetry.batteryPercent}%",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -188,6 +189,8 @@ fun ChatStudioScreen(
         ) {
             if (uiState.activeModel == null) {
                 item(key = "no_model_warning_banner") {
+                    val hasOtherLoadedModels = uiState.localModels.isNotEmpty()
+                    val requiredExt = uiState.activeRuntime.fileExtensions.joinToString(" or ")
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -214,31 +217,52 @@ fun ChatStudioScreen(
                                 )
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "No Local AI Model Loaded",
+                                        text = if (hasOtherLoadedModels) {
+                                            "No ${uiState.activeRuntime.fileExtensions.first()} Model Loaded for ${uiState.activeRuntime.displayName}"
+                                        } else {
+                                            "No Local AI Model Loaded"
+                                        },
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onTertiaryContainer
                                     )
                                     Text(
-                                        text = "Load a local model weight file (.gguf, .pte, .tmac, or .bitnet) from your device storage to run 100% offline inference.",
+                                        text = if (hasOtherLoadedModels) {
+                                            "${uiState.activeRuntime.displayName} requires $requiredExt weights, while your loaded model '${uiState.localModels.first().name}' is ${uiState.localModels.first().quantization}. Load a $requiredExt file or switch back to a compatible runtime."
+                                        } else {
+                                            "Load a local model weight file (.gguf, .pte, .tmac, or .bitnet) from your device storage to run 100% offline inference."
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
                                     )
                                 }
                             }
-                            Button(
-                                onClick = onNavigateToModels,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("load_model_cta_button")
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.FolderOpen,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Load Local Model from Device")
+                                Button(
+                                    onClick = onNavigateToModels,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("load_model_cta_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FolderOpen,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(if (hasOtherLoadedModels) "Load ${uiState.activeRuntime.fileExtensions.first()} File" else "Load Local Model from Device")
+                                }
+                                if (hasOtherLoadedModels) {
+                                    TextButton(
+                                        onClick = onOpenRuntimeSwitcher,
+                                        modifier = Modifier.testTag("switch_compatible_runtime_button")
+                                    ) {
+                                        Text("Switch Runtime")
+                                    }
+                                }
                             }
                         }
                     }
@@ -361,7 +385,9 @@ fun ChatStudioScreen(
                             Text(
                                 text = "Message ${uiState.activeModel?.name ?: "Leafy"} offline…",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         },
                         maxLines = 4,

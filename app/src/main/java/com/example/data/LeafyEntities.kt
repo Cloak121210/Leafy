@@ -54,6 +54,47 @@ enum class AiRuntime(
         fileExtensions = listOf(".pte")
     );
 
+    /**
+     * Checks whether the given on-disk local model can be executed by this runtime engine
+     * without cross-engine spoofing.
+     */
+    fun isCompatibleWithModel(model: LocalModelEntity): Boolean {
+        val pathLower = model.localFilePath.lowercase()
+        val modelRuntime = entries.find {
+            it.id.equals(model.runtimeId, ignoreCase = true) ||
+                it.name.equals(model.runtimeId, ignoreCase = true)
+        }
+        return when (this) {
+            LLAMA_CPP -> pathLower.endsWith(".gguf") || modelRuntime == LLAMA_CPP
+            BITNET_CPP -> pathLower.endsWith(".bitnet") || pathLower.endsWith(".gguf") || modelRuntime == BITNET_CPP
+            T_MAC -> pathLower.endsWith(".tmac") || pathLower.endsWith(".bin") || pathLower.endsWith(".gguf") || modelRuntime == T_MAC
+            EXECUTORCH -> pathLower.endsWith(".pte") || modelRuntime == EXECUTORCH
+        }
+    }
+
+    /**
+     * Returns true if the model uses native ternary (1.58-bit / i2_s / TQ1 / TQ2) or LUT weights
+     * specifically tailored for Bitnet.cpp or T-MAC.
+     */
+    fun isNativeSpecializedModel(model: LocalModelEntity): Boolean {
+        val lowerName = (model.name + " " + model.quantization + " " + model.localFilePath).lowercase()
+        return when (this) {
+            LLAMA_CPP -> lowerName.contains(".gguf")
+            BITNET_CPP -> lowerName.contains("1.58") ||
+                lowerName.contains("i2_s") ||
+                lowerName.contains("bitnet") ||
+                lowerName.contains("tq1") ||
+                lowerName.contains("tq2") ||
+                lowerName.endsWith(".bitnet")
+            T_MAC -> lowerName.contains("tmac") ||
+                lowerName.contains("lut") ||
+                lowerName.contains("int2") ||
+                lowerName.contains("int3") ||
+                lowerName.endsWith(".tmac")
+            EXECUTORCH -> lowerName.endsWith(".pte") || lowerName.contains("pte")
+        }
+    }
+
     companion object {
         fun fromId(id: String): AiRuntime =
             entries.find { it.id.equals(id, ignoreCase = true) || it.name.equals(id, ignoreCase = true) }

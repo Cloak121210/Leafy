@@ -11,11 +11,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -241,11 +246,20 @@ fun LeafyCleanTopBar(
     onOpenSettingsScreen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.94f))
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                )
+            )
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -253,7 +267,7 @@ fun LeafyCleanTopBar(
                 // Left: Organic Canopy Drawer button
                 Surface(
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
                         .clickable(onClick = onOpenCanopyDrawer)
                         .testTag("open_canopy_drawer_button"),
@@ -265,7 +279,8 @@ fun LeafyCleanTopBar(
                         Icon(
                             imageVector = Icons.Default.Menu,
                             contentDescription = "Open Leafy menu drawer",
-                            tint = MaterialTheme.colorScheme.onSurface
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -274,7 +289,7 @@ fun LeafyCleanTopBar(
                 Surface(
                     modifier = Modifier
                         .weight(1f, fill = false)
-                        .padding(horizontal = 8.dp)
+                        .padding(horizontal = 6.dp)
                         .clip(RoundedCornerShape(50))
                         .clickable(onClick = onOpenModelSwitcher)
                         .testTag("top_model_switcher_pill"),
@@ -284,18 +299,22 @@ fun LeafyCleanTopBar(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         val hasActiveModel = activeModel != null && activeModel.isInstalled
                         val dotColor = if (hasActiveModel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
-                        val titleText = if (hasActiveModel) activeModel.name else "No Model Loaded"
-                        val subtitleText = if (hasActiveModel) "${activeModel.quantization} • ${activeModel.sizeMb} MB" else "Tap to load local model"
+                        val titleText = if (hasActiveModel) activeModel.name else "No ${activeRuntime.fileExtensions.first()} Model"
+                        val subtitleText = if (hasActiveModel) {
+                            "${activeModel.quantization} • ${activeModel.sizeMb} MB • ${activeRuntime.displayName}"
+                        } else {
+                            "Load model for ${activeRuntime.displayName}"
+                        }
 
                         Box(
                             modifier = Modifier
-                                .size(9.dp)
+                                .size(8.dp)
                                 .clip(CircleShape)
                                 .background(dotColor)
                         )
@@ -305,7 +324,7 @@ fun LeafyCleanTopBar(
                         ) {
                             Text(
                                 text = titleText,
-                                style = MaterialTheme.typography.titleSmall,
+                                style = MaterialTheme.typography.labelLarge,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 color = if (hasActiveModel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
@@ -330,12 +349,12 @@ fun LeafyCleanTopBar(
                 // Right: Dedicated Runtime Switcher Button + Power Mode Controls + Settings
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     // Dedicated Runtime Engine Menu Button (Separate from Models & Modes)
                     Surface(
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .clickable(onClick = onOpenRuntimeSwitcher)
                             .testTag("top_runtime_switcher_button"),
@@ -348,7 +367,7 @@ fun LeafyCleanTopBar(
                                 imageVector = Icons.Default.Memory,
                                 contentDescription = "Switch Inference Runtime (${activeRuntime.displayName})",
                                 tint = runtimeAccentColor(activeRuntime),
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }
@@ -356,7 +375,7 @@ fun LeafyCleanTopBar(
                     // Power Modes & Studio Controls Button
                     Surface(
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .clickable(onClick = onOpenSpecialCommandMenu)
                             .testTag("open_special_menu_button"),
@@ -369,14 +388,14 @@ fun LeafyCleanTopBar(
                                 imageVector = Icons.Default.Tune,
                                 contentDescription = "Power Modes & Studio Controls",
                                 tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }
 
                     Surface(
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .clickable(onClick = onOpenSettingsScreen)
                             .testTag("open_settings_screen_button"),
@@ -389,7 +408,7 @@ fun LeafyCleanTopBar(
                                 imageVector = Icons.Default.Settings,
                                 contentDescription = "Settings & Eco Studio",
                                 tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }

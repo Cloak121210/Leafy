@@ -14,14 +14,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -161,47 +165,49 @@ fun LeafyAppShell(
             )
         }
     ) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            contentWindowInsets = WindowInsets.safeDrawing,
-            topBar = {
-                val secondaryTitle = when (uiState.currentTab) {
-                    LeafyTab.CHAT -> "Leafy"
-                    LeafyTab.MODELS -> "Local Models"
-                    LeafyTab.RUNTIMES -> "Inference Runtimes"
-                    LeafyTab.KNOWLEDGE -> "Local RAG & Persona Studio"
-                    LeafyTab.ECO_SETTINGS -> "Power Modes & Telemetry"
-                }
-
-                LeafyCleanTopBar(
-                    isChatFrontScreen = uiState.currentTab == LeafyTab.CHAT,
-                    secondaryScreenTitle = secondaryTitle,
-                    activeModel = uiState.activeModel,
-                    activeRuntime = uiState.activeRuntime,
-                    powerProfile = uiState.powerProfile,
-                    statusBanner = uiState.statusBannerMessage,
-                    onOpenCanopyDrawer = {
-                        scope.launch { drawerState.open() }
-                    },
-                    onNavigateBackToChat = {
-                        viewModel.selectTab(LeafyTab.CHAT)
-                    },
-                    onOpenModelSwitcher = { showModelSwitcherSheet = true },
-                    onOpenRuntimeSwitcher = { showRuntimeSwitcherSheet = true },
-                    onOpenSpecialCommandMenu = { showSpecialCommandMenu = true },
-                    onOpenSettingsScreen = {
-                        viewModel.selectTab(LeafyTab.ECO_SETTINGS)
+        OrganicLeafBackground(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = Color.Transparent,
+                contentWindowInsets = WindowInsets.safeDrawing,
+                topBar = {
+                    val secondaryTitle = when (uiState.currentTab) {
+                        LeafyTab.CHAT -> "Leafy"
+                        LeafyTab.MODELS -> "Local Models"
+                        LeafyTab.RUNTIMES -> "Inference Runtimes"
+                        LeafyTab.KNOWLEDGE -> "Local RAG & Persona Studio"
+                        LeafyTab.ECO_SETTINGS -> "Power Modes & Telemetry"
                     }
-                )
-            }
-        ) { innerPadding ->
-            OrganicLeafBackground(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
+
+                    LeafyCleanTopBar(
+                        isChatFrontScreen = uiState.currentTab == LeafyTab.CHAT,
+                        secondaryScreenTitle = secondaryTitle,
+                        activeModel = uiState.activeModel,
+                        activeRuntime = uiState.activeRuntime,
+                        powerProfile = uiState.powerProfile,
+                        statusBanner = uiState.statusBannerMessage,
+                        onOpenCanopyDrawer = {
+                            scope.launch { drawerState.open() }
+                        },
+                        onNavigateBackToChat = {
+                            viewModel.selectTab(LeafyTab.CHAT)
+                        },
+                        onOpenModelSwitcher = { showModelSwitcherSheet = true },
+                        onOpenRuntimeSwitcher = { showRuntimeSwitcherSheet = true },
+                        onOpenSpecialCommandMenu = { showSpecialCommandMenu = true },
+                        onOpenSettingsScreen = {
+                            viewModel.selectTab(LeafyTab.ECO_SETTINGS)
+                        }
+                    )
+                }
+            ) { innerPadding ->
                 AnimatedContent(
                     targetState = uiState.currentTab,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
                     label = "screen_transition"
                 ) { targetTab ->
                     when (targetTab) {
@@ -214,7 +220,8 @@ fun LeafyAppShell(
                             onToggleSpeak = viewModel::toggleSpeakMessage,
                             onStopStreaming = viewModel::stopStreaming,
                             onOpenSpecialMenu = { showSpecialCommandMenu = true },
-                            onNavigateToModels = { viewModel.selectTab(LeafyTab.MODELS) }
+                            onNavigateToModels = { viewModel.selectTab(LeafyTab.MODELS) },
+                            onOpenRuntimeSwitcher = { showRuntimeSwitcherSheet = true }
                         )
 
                         LeafyTab.MODELS -> LocalModelsScreen(
@@ -284,6 +291,7 @@ fun LeafyAppShell(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -435,6 +443,7 @@ fun LeafyAppShell(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -468,6 +477,7 @@ fun LeafyAppShell(
                 AiRuntime.entries.forEach { runtime ->
                     val isSelected = uiState.activeRuntime == runtime
                     val accent = runtimeAccentColor(runtime)
+                    val compatibleCount = uiState.localModels.count { runtime.isCompatibleWithModel(it) }
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -499,6 +509,18 @@ fun LeafyAppShell(
                                     text = runtime.architectureNote,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (compatibleCount > 0) {
+                                        "$compatibleCount compatible model(s) on device (${runtime.fileExtensions.joinToString(", ")})"
+                                    } else {
+                                        "0 compatible models loaded — requires ${runtime.fileExtensions.joinToString(" or ")}"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFontFamily
+                                    ),
+                                    color = if (compatibleCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             if (isSelected) {
@@ -533,7 +555,8 @@ private fun LeafyCanopyNavigationDrawer(
 ) {
     ModalDrawerSheet(
         modifier = Modifier.width(320.dp),
-        drawerContainerColor = MaterialTheme.colorScheme.surface
+        drawerContainerColor = MaterialTheme.colorScheme.surface,
+        windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)
     ) {
         Column(
             modifier = Modifier
@@ -568,11 +591,32 @@ private fun LeafyCanopyNavigationDrawer(
                             }
                         }
                         Column {
-                            Text(
-                                text = "Leafy",
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "Leafy",
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                ) {
+                                    Text(
+                                        text = BuildConfig.VERSION_NAME,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontFamily = JetBrainsMonoFontFamily,
+                                            fontWeight = FontWeight.Bold
+                                        ),
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier
+                                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                                            .testTag("drawer_version_badge")
+                                    )
+                                }
+                            }
                             Text(
                                 text = "100% Offline • Sovereign AI",
                                 style = MaterialTheme.typography.labelSmall,
@@ -700,7 +744,11 @@ private fun LeafyCanopyNavigationDrawer(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = conv.activeRuntimeId,
+                                            text = if (isSelected) {
+                                                uiState.activeRuntime.displayName
+                                            } else {
+                                                AiRuntime.fromId(conv.activeRuntimeId).displayName
+                                            },
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -855,6 +903,7 @@ private fun LeafyPowerModesAndStudioSheet(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .navigationBarsPadding()
             .padding(horizontal = 18.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {

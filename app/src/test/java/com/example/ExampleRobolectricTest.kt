@@ -259,13 +259,40 @@ class ExampleRobolectricTest {
         assertEquals(120L, header.tensorCount)
         assertEquals(15L, header.metadataKvCount)
 
-        // Test ChatML prompt formatting
+        // Test ChatML prompt formatting with multi-turn conversation history
+        val history = listOf(
+            com.example.data.MessageNodeEntity(
+                id = 1L,
+                conversationId = 1L,
+                parentId = null,
+                role = "USER",
+                content = "Hello Leafy",
+                runtimeId = AiRuntime.LLAMA_CPP.id,
+                modelName = "Test",
+                quantization = "Q4_0",
+                powerProfileId = PowerProfile.ECO.id
+            ),
+            com.example.data.MessageNodeEntity(
+                id = 2L,
+                conversationId = 1L,
+                parentId = 1L,
+                role = "ASSISTANT",
+                content = "Hi! How can I help you offline today?",
+                runtimeId = AiRuntime.LLAMA_CPP.id,
+                modelName = "Test",
+                quantization = "Q4_0",
+                powerProfileId = PowerProfile.ECO.id
+            )
+        )
         val formattedPrompt = engine.buildFormattedPrompt(
             userPrompt = "Explain attention mechanism",
             persona = persona,
-            ragSnippets = emptyList()
+            ragSnippets = emptyList(),
+            conversationHistory = history
         )
         assertTrue(formattedPrompt.contains("<|im_start|>system"))
+        assertTrue(formattedPrompt.contains("<|im_start|>user\nHello Leafy"))
+        assertTrue(formattedPrompt.contains("<|im_start|>assistant\nHi! How can I help you offline today?"))
         assertTrue(formattedPrompt.contains("<|im_start|>user\nExplain attention mechanism"))
         assertTrue(formattedPrompt.contains("<|im_start|>assistant"))
 
@@ -307,5 +334,64 @@ class ExampleRobolectricTest {
         assertTrue(lutOutput.contains("T-MAC LUT"))
         assertTrue(lutOutput.contains("LUT table lookups completed"))
         tempTmac.delete()
+    }
+
+    @Test
+    fun `runtime compatibility rejects cross-engine spoofing between GGUF and ExecuTorch PTE`() {
+        kotlinx.coroutines.runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val engine = com.example.engine.LocalInferenceEngine(context)
+            val tempGguf = java.io.File.createTempFile("lfm_test", ".gguf")
+            val validGgufBytes = java.io.ByteArrayOutputStream().apply {
+                write("GGUF".toByteArray(Charsets.US_ASCII))
+                write(byteArrayOf(3, 0, 0, 0))
+                write(byteArrayOf(120, 0, 0, 0, 0, 0, 0, 0))
+                write(byteArrayOf(15, 0, 0, 0, 0, 0, 0, 0))
+            }.toByteArray()
+            tempGguf.writeBytes(validGgufBytes)
+
+            val ggufModel = com.example.data.LocalModelEntity(
+                id = "gguf_test_model",
+                name = "LFM2.5-1.2B-Instruct-Q4_0",
+                family = "GGUF",
+                runtimeId = AiRuntime.LLAMA_CPP.id,
+                quantization = "Q4_0",
+                parameters = "663 MB",
+                sizeMb = 663,
+                ramRequiredMb = 828,
+                contextWindow = 4096,
+                expectedTps = 0f,
+                ecoRating = 5,
+                specialty = "GGUF test model",
+                isInstalled = true,
+                isUserImported = true,
+                localFilePath = tempGguf.absolutePath,
+                sha256Short = "1234abcd",
+                fileSizeBytes = tempGguf.length()
+            )
+
+            // GGUF is compatible with llama.cpp, Bitnet.cpp, and T-MAC, but NOT ExecuTorch
+            assertTrue(AiRuntime.LLAMA_CPP.isCompatibleWithModel(ggufModel))
+            assertTrue(AiRuntime.BITNET_CPP.isCompatibleWithModel(ggufModel))
+            assertTrue(AiRuntime.T_MAC.isCompatibleWithModel(ggufModel))
+            assertTrue(!AiRuntime.EXECUTORCH.isCompatibleWithModel(ggufModel))
+
+            val persona = com.example.data.LeafyRepository.defaultPersonas().first()
+            var lastStep: com.example.engine.StreamingStep? = null
+            engine.streamResponse(
+                userPrompt = "Hello",
+                model = ggufModel,
+                runtime = AiRuntime.EXECUTORCH,
+                powerProfile = PowerProfile.ECO,
+                persona = persona,
+                pinnedDocs = emptyList()
+            ).collect { step ->
+                lastStep = step
+            }
+
+            assertTrue(lastStep != null)
+            assertTrue(lastStep!!.accumulatedText.contains("not compatible with ExecuTorch"))
+            tempGguf.delete()
+        }
     }
 }

@@ -152,7 +152,11 @@ fun EcoAndSettingsScreen(
                         )
                     }
 
-                    val ramRatio = (telemetry.usedRamMb.toFloat() / telemetry.totalRamMb.toFloat()).coerceIn(0.05f, 0.98f)
+                    val ramRatio = if (telemetry.totalRamMb > 0) {
+                        (telemetry.usedRamMb.toFloat() / telemetry.totalRamMb.toFloat()).coerceIn(0.05f, 0.98f)
+                    } else {
+                        0.05f
+                    }
                     LinearProgressIndicator(
                         progress = { ramRatio },
                         modifier = Modifier
@@ -440,6 +444,29 @@ fun EcoAndSettingsScreen(
                         Text(
                             text = "Reset & Wipe Local Chat History",
                             color = MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Leafy Offline Studio",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Version ${com.example.BuildConfig.VERSION_NAME} (Build ${com.example.BuildConfig.VERSION_CODE})",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.testTag("settings_version_label")
                         )
                     }
                 }

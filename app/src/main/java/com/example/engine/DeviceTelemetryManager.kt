@@ -63,6 +63,8 @@ class DeviceTelemetryManager(private val context: Context) {
         val measuredMw = if (isValidCurrent && voltageMv > 0) {
             val currentMa = abs(safeCurrentNow) / 1000f
             ((currentMa * (voltageMv / 1000f))).toInt()
+        } else if (isGenerating) {
+            activeProfileMilliwatts
         } else {
             0
         }

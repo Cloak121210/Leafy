@@ -98,6 +98,8 @@ class LeafyViewModel(
 
     private val _currentTab = MutableStateFlow(LeafyTab.CHAT)
     private val _activeConversationId = MutableStateFlow<Long?>(null)
+    private val _selectedRuntime = MutableStateFlow<AiRuntime?>(null)
+    private val _selectedModelId = MutableStateFlow<String?>(null)
     private val _powerProfile = MutableStateFlow(PowerProfile.ECO)
     private val _streamingPreview = MutableStateFlow<StreamingPreviewState?>(null)
     private val _telemetry = MutableStateFlow(HardwareTelemetrySnapshot())
@@ -131,6 +133,13 @@ class LeafyViewModel(
         quintuple(tab, activeConvId, powerProfile, comicSans, darkTheme)
     }
 
+    private val runtimeSelectionFlow = combine(
+        _selectedRuntime,
+        _selectedModelId
+    ) { selectedRuntime, selectedModelId ->
+        selectedRuntime to selectedModelId
+    }
+
     private val runtimeOverlayFlow = combine(
         _streamingPreview,
         _telemetry,
@@ -152,9 +161,10 @@ class LeafyViewModel(
     val uiState: StateFlow<LeafyUiState> = combine(
         baseDataFlow,
         preferencesFlow,
+        runtimeSelectionFlow,
         runtimeOverlayFlow,
         importFlow
-    ) { base, prefs, overlay, importState ->
+    ) { base, prefs, selection, overlay, importState ->
         val conversations = base.first
         val allMessages = base.second
         val models = base.third
@@ -166,6 +176,9 @@ class LeafyViewModel(
         val powerProfile = prefs.third
         val useComicSans = prefs.fourth
         val isDarkTheme = prefs.fifth
+
+        val explicitRuntime = selection.first
+        val explicitModelId = selection.second
 
         val streaming = overlay.first
         val telemetry = overlay.second
@@ -188,12 +201,18 @@ class LeafyViewModel(
         val validLocalModels = models.filter {
             it.isInstalled && it.localFilePath.isNotBlank() && File(it.localFilePath).exists() && File(it.localFilePath).length() > 0L
         }
-        val activeModel = validLocalModels.find { it.id == activeConv?.activeModelId }
-            ?: validLocalModels.firstOrNull()
 
-        val activeRuntime = activeConv?.activeRuntimeId?.let { AiRuntime.fromId(it) }
-            ?: activeModel?.runtimeId?.let { AiRuntime.fromId(it) }
+        val activeRuntime = explicitRuntime
+            ?: activeConv?.activeRuntimeId?.takeIf { it.isNotBlank() }?.let { AiRuntime.fromId(it) }
+            ?: validLocalModels.firstOrNull()?.runtimeId?.let { AiRuntime.fromId(it) }
             ?: AiRuntime.LLAMA_CPP
+
+        val compatibleModels = validLocalModels.filter { activeRuntime.isCompatibleWithModel(it) }
+        val requestedModelId = explicitModelId?.takeIf { it.isNotBlank() } ?: activeConv?.activeModelId
+
+        val activeModel = compatibleModels.find { it.id == requestedModelId }
+            ?: compatibleModels.find { AiRuntime.fromId(it.runtimeId) == activeRuntime }
+            ?: compatibleModels.firstOrNull()
 
         val activePersona = personas.find { it.id == activeConv?.activePersonaId }
             ?: personas.firstOrNull()
@@ -224,7 +243,7 @@ class LeafyViewModel(
         )
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
+        started = SharingStarted.Eagerly,
         initialValue = LeafyUiState()
     )
 
@@ -313,17 +332,31 @@ class LeafyViewModel(
     }
 
     fun setPowerProfile(profile: PowerProfile) {
+        val changed = _powerProfile.value != profile
         _powerProfile.value = profile
+        if (changed && _streamingPreview.value == null) {
+            inferenceEngine.releaseMountedResources()
+        }
         refreshTelemetry()
         showTransientBanner("${profile.displayName} activated (${profile.cpuThreads} threads • ${profile.kvCacheBits})")
     }
 
     fun selectConversation(conversationId: Long) {
-        _activeConversationId.value = conversationId
-        _currentTab.value = LeafyTab.CHAT
+        stopStreaming()
+        viewModelScope.launch {
+            val targetConv = uiState.value.conversations.find { it.id == conversationId }
+                ?: repository.conversations.first().find { it.id == conversationId }
+            if (targetConv != null) {
+                _selectedRuntime.value = AiRuntime.fromId(targetConv.activeRuntimeId)
+                _selectedModelId.value = targetConv.activeModelId.takeIf { it.isNotBlank() }
+            }
+            _activeConversationId.value = conversationId
+            _currentTab.value = LeafyTab.CHAT
+        }
     }
 
     fun createNewConversation() {
+        stopStreaming()
         viewModelScope.launch {
             val state = uiState.value
             val modelId = state.activeModel?.id ?: ""
@@ -341,6 +374,9 @@ class LeafyViewModel(
     }
 
     fun deleteConversation(conversationId: Long) {
+        if (_activeConversationId.value == conversationId) {
+            stopStreaming()
+        }
         viewModelScope.launch {
             repository.deleteConversation(conversationId)
             val remaining = repository.conversations.first()
@@ -357,12 +393,16 @@ class LeafyViewModel(
                 )
                 _activeConversationId.value = newId
             } else if (_activeConversationId.value == conversationId) {
-                _activeConversationId.value = remaining.first().id
+                val nextConv = remaining.first()
+                _selectedRuntime.value = AiRuntime.fromId(nextConv.activeRuntimeId)
+                _selectedModelId.value = nextConv.activeModelId.takeIf { it.isNotBlank() }
+                _activeConversationId.value = nextConv.id
             }
         }
     }
 
     fun switchModelAndRuntime(model: LocalModelEntity) {
+        stopStreaming()
         viewModelScope.launch {
             val file = File(model.localFilePath)
             if (!model.isInstalled || model.localFilePath.isBlank() || !file.exists() || file.length() <= 0L) {
@@ -370,42 +410,84 @@ class LeafyViewModel(
                 showTransientBanner("Model file '${model.name}' was not found on disk.")
                 return@launch
             }
+
+            val currentRuntime = uiState.value.activeRuntime
+            val modelDefaultRuntime = AiRuntime.fromId(model.runtimeId)
+            val targetRuntime = if (currentRuntime.isCompatibleWithModel(model) && modelDefaultRuntime == AiRuntime.LLAMA_CPP) {
+                currentRuntime
+            } else {
+                modelDefaultRuntime
+            }
+
+            if (uiState.value.activeModel?.id != model.id) {
+                inferenceEngine.releaseMountedResources()
+            }
+
+            _selectedModelId.value = model.id
+            _selectedRuntime.value = targetRuntime
+
             val currentConv = uiState.value.activeConversation
+                ?: repository.conversations.first().let { convs ->
+                    convs.find { it.id == _activeConversationId.value } ?: convs.firstOrNull()
+                }
             if (currentConv != null) {
                 repository.updateConversation(
                     currentConv.copy(
                         activeModelId = model.id,
-                        activeRuntimeId = model.runtimeId
+                        activeRuntimeId = targetRuntime.id
                     )
                 )
             }
-            showTransientBanner("Loaded model: ${model.name} (${model.quantization})")
+            showTransientBanner("Mounted ${model.name} (${model.quantization}) on ${targetRuntime.displayName}")
         }
     }
 
     fun switchRuntimeOnly(runtime: AiRuntime) {
+        stopStreaming()
         viewModelScope.launch {
-            val modelsForRuntime = uiState.value.localModels.filter {
-                AiRuntime.fromId(it.runtimeId) == runtime && it.isInstalled && File(it.localFilePath).exists()
+            val previousRuntime = uiState.value.activeRuntime
+            if (previousRuntime != runtime && runtime == AiRuntime.EXECUTORCH) {
+                inferenceEngine.releaseMountedResources()
             }
-            val preferredModel = modelsForRuntime.firstOrNull()
+
+            val allValidModels = repository.localModels.first().filter {
+                it.isInstalled && it.localFilePath.isNotBlank() && File(it.localFilePath).exists() && File(it.localFilePath).length() > 0L
+            }
+            val compatibleModels = allValidModels.filter { runtime.isCompatibleWithModel(it) }
+            val currentModelId = _selectedModelId.value ?: uiState.value.activeModel?.id
+            val preferredModel = compatibleModels.find { it.id == currentModelId }
+                ?: compatibleModels.find { AiRuntime.fromId(it.runtimeId) == runtime }
+                ?: compatibleModels.firstOrNull()
+
+            _selectedRuntime.value = runtime
+            _selectedModelId.value = preferredModel?.id
 
             val currentConv = uiState.value.activeConversation
+                ?: repository.conversations.first().let { convs ->
+                    convs.find { it.id == _activeConversationId.value } ?: convs.firstOrNull()
+                }
             if (currentConv != null) {
                 repository.updateConversation(
                     currentConv.copy(
                         activeRuntimeId = runtime.id,
-                        activeModelId = preferredModel?.id ?: currentConv.activeModelId
+                        activeModelId = preferredModel?.id ?: ""
                     )
                 )
             }
-            showTransientBanner("Active runtime switched to ${runtime.displayName} (${runtime.shortBadge})")
+
+            if (preferredModel != null) {
+                showTransientBanner("Active runtime: ${runtime.displayName} • Mounted ${preferredModel.name}")
+            } else {
+                showTransientBanner("Active runtime: ${runtime.displayName} (Load a ${runtime.fileExtensions.joinToString("/")} model to run inference)")
+            }
         }
     }
 
     fun selectPersona(persona: PersonaPresetEntity) {
         viewModelScope.launch {
-            val currentConv = uiState.value.activeConversation ?: return@launch
+            val currentConv = uiState.value.activeConversation
+                ?: repository.conversations.first().firstOrNull()
+                ?: return@launch
             repository.updateConversation(currentConv.copy(activePersonaId = persona.id))
             showTransientBanner("Persona active: ${persona.name}")
         }
@@ -417,9 +499,14 @@ class LeafyViewModel(
 
         viewModelScope.launch {
             val state = uiState.value
+            val runtime = state.activeRuntime
             val model = state.activeModel
             if (model == null || !model.isInstalled || model.localFilePath.isBlank()) {
-                showTransientBanner("No local AI model loaded. Please load a model file from the Local Models screen first.")
+                if (state.localModels.isNotEmpty()) {
+                    showTransientBanner("No ${runtime.fileExtensions.joinToString("/")} model loaded for ${runtime.displayName}. Switch runtime or load a ${runtime.fileExtensions.first()} file.")
+                } else {
+                    showTransientBanner("No local AI model loaded. Please load a model file from the Local Models screen first.")
+                }
                 return@launch
             }
             val modelFile = File(model.localFilePath)
@@ -441,7 +528,6 @@ class LeafyViewModel(
             } ?: return@launch
 
             val currentLeafId = state.activeBranchMessages.lastOrNull()?.node?.id ?: conv.activeLeafMessageId
-            val runtime = state.activeRuntime
             val profile = state.powerProfile
             val persona = state.activePersona ?: PersonaPresetEntity(
                 id = 1L,
@@ -457,6 +543,8 @@ class LeafyViewModel(
                 val newTitle = cleanPrompt.take(38).let { if (cleanPrompt.length > 38) "$it…" else it }
                 repository.updateConversation(conv.copy(title = newTitle))
             }
+
+            val priorHistory = state.activeBranchMessages.map { it.node }
 
             val userNodeId = repository.insertMessageNode(
                 MessageNodeEntity(
@@ -480,6 +568,7 @@ class LeafyViewModel(
                 powerProfile = profile,
                 persona = persona,
                 pinnedDocs = state.pinnedRagDocuments,
+                priorHistory = priorHistory,
                 branchAttemptIndex = 1
             )
         }
@@ -519,6 +608,10 @@ class LeafyViewModel(
                 topP = 0.9f
             )
 
+            val priorHistory = state.activeBranchMessages
+                .takeWhile { it.node.id != originalUserNode.id }
+                .map { it.node }
+
             val newBranchUserNodeId = repository.insertMessageNode(
                 MessageNodeEntity(
                     conversationId = conv.id,
@@ -542,6 +635,7 @@ class LeafyViewModel(
                 powerProfile = profile,
                 persona = persona,
                 pinnedDocs = state.pinnedRagDocuments,
+                priorHistory = priorHistory,
                 branchAttemptIndex = 2
             )
         }
@@ -577,6 +671,10 @@ class LeafyViewModel(
             val profile = state.powerProfile
             val persona = state.activePersona ?: return@launch
 
+            val priorHistory = state.activeBranchMessages
+                .takeWhile { it.node.id != parentUserNodeId }
+                .map { it.node }
+
             repository.setActiveBranchLeaf(conv.id, parentUserNodeId)
 
             streamAssistantReplyForParent(
@@ -588,6 +686,7 @@ class LeafyViewModel(
                 powerProfile = profile,
                 persona = persona,
                 pinnedDocs = state.pinnedRagDocuments,
+                priorHistory = priorHistory,
                 branchAttemptIndex = existingSiblings + 1
             )
         }
@@ -623,6 +722,7 @@ class LeafyViewModel(
         powerProfile: PowerProfile,
         persona: PersonaPresetEntity,
         pinnedDocs: List<RagDocumentEntity>,
+        priorHistory: List<MessageNodeEntity> = emptyList(),
         branchAttemptIndex: Int
     ) {
         streamingJob?.cancel()
@@ -634,63 +734,68 @@ class LeafyViewModel(
             var finalEnergy = 0f
             var finalCitations = emptyList<String>()
 
-            inferenceEngine.streamResponse(
-                userPrompt = promptText,
-                model = model,
-                runtime = runtime,
-                powerProfile = powerProfile,
-                persona = persona,
-                pinnedDocs = pinnedDocs,
-                branchAttemptIndex = branchAttemptIndex
-            ).collect { step ->
-                finalStepText = step.accumulatedText
-                finalTps = step.currentTps
-                finalTtft = step.ttftMs
-                finalTokens = step.generatedTokens
-                finalEnergy = step.energyMicroWh
-                finalCitations = step.citedRagSnippets.map { it.documentTitle }
-
-                _streamingPreview.value = StreamingStepToPreview(
-                    parentNodeId = parentUserNodeId,
-                    stepText = step.accumulatedText,
-                    tps = step.currentTps,
-                    ttft = step.ttftMs,
-                    tokens = step.generatedTokens,
-                    energy = step.energyMicroWh,
-                    citations = finalCitations,
+            try {
+                inferenceEngine.streamResponse(
+                    userPrompt = promptText,
+                    model = model,
                     runtime = runtime,
-                    modelName = model.name,
-                    quantization = model.quantization
-                )
-            }
+                    powerProfile = powerProfile,
+                    persona = persona,
+                    pinnedDocs = pinnedDocs,
+                    conversationHistory = priorHistory,
+                    branchAttemptIndex = branchAttemptIndex
+                ).collect { step ->
+                    finalStepText = step.accumulatedText
+                    finalTps = step.currentTps
+                    finalTtft = step.ttftMs
+                    finalTokens = step.generatedTokens
+                    finalEnergy = step.energyMicroWh
+                    finalCitations = step.citedRagSnippets.map { it.documentTitle }
 
-            _streamingPreview.value = null
-            _totalSessionTokens.value += finalTokens
-            refreshTelemetry()
-
-            if (finalTps > 0f) {
-                repository.updateLocalModel(model.copy(expectedTps = finalTps))
-            }
-
-            if (finalStepText.isNotBlank()) {
-                repository.insertMessageNode(
-                    MessageNodeEntity(
-                        conversationId = conversationId,
-                        parentId = parentUserNodeId,
-                        role = "ASSISTANT",
-                        content = finalStepText,
-                        runtimeId = runtime.id,
+                    _streamingPreview.value = StreamingStepToPreview(
+                        parentNodeId = parentUserNodeId,
+                        stepText = step.accumulatedText,
+                        tps = step.currentTps,
+                        ttft = step.ttftMs,
+                        tokens = step.generatedTokens,
+                        energy = step.energyMicroWh,
+                        citations = finalCitations,
+                        runtime = runtime,
                         modelName = model.name,
-                        quantization = model.quantization,
-                        powerProfileId = powerProfile.id,
-                        tokensPerSec = finalTps,
-                        ttftMs = finalTtft,
-                        tokenCount = finalTokens,
-                        energyMicroWh = finalEnergy,
-                        citedRagTitles = finalCitations.joinToString("|"),
-                        branchNote = "${runtime.displayName} • ${model.quantization}"
+                        quantization = model.quantization
                     )
-                )
+                }
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    _streamingPreview.value = null
+                    _totalSessionTokens.value += finalTokens
+                    refreshTelemetry()
+
+                    if (finalTps > 0f) {
+                        repository.updateLocalModel(model.copy(expectedTps = finalTps))
+                    }
+
+                    if (finalStepText.isNotBlank()) {
+                        repository.insertMessageNode(
+                            MessageNodeEntity(
+                                conversationId = conversationId,
+                                parentId = parentUserNodeId,
+                                role = "ASSISTANT",
+                                content = finalStepText,
+                                runtimeId = runtime.id,
+                                modelName = model.name,
+                                quantization = model.quantization,
+                                powerProfileId = powerProfile.id,
+                                tokensPerSec = finalTps,
+                                ttftMs = finalTtft,
+                                tokenCount = finalTokens,
+                                energyMicroWh = finalEnergy,
+                                citedRagTitles = finalCitations.joinToString("|"),
+                                branchNote = "${runtime.displayName} • ${model.quantization}"
+                            )
+                        )
+                    }
+                }
             }
         }
     }
@@ -727,6 +832,11 @@ class LeafyViewModel(
 
     fun deleteDownloadedModel(model: LocalModelEntity) {
         viewModelScope.launch {
+            if (uiState.value.activeModel?.id == model.id || _selectedModelId.value == model.id) {
+                stopStreaming()
+                inferenceEngine.releaseMountedResources()
+                _selectedModelId.value = null
+            }
             fileManager.deleteModelFile(model.localFilePath)
             repository.deleteLocalModel(model.id)
             showTransientBanner("Removed local model '${model.name}' (${model.sizeMb} MB).")
@@ -791,6 +901,7 @@ class LeafyViewModel(
                 fileManager.scanDiskForModelFiles()
             }
             var addedCount = 0
+            var firstDiscovered: LocalModelEntity? = null
             val existingPaths = repository.localModels.first().map { it.localFilePath }.toSet()
 
             for (file in discoveredFiles) {
@@ -802,9 +913,14 @@ class LeafyViewModel(
                         silentInvalid = true
                     )
                     if (registered != null) {
+                        if (firstDiscovered == null) firstDiscovered = registered
                         addedCount++
                     }
                 }
+            }
+
+            if (firstDiscovered != null && uiState.value.activeModel == null) {
+                switchModelAndRuntime(firstDiscovered)
             }
 
             if (!silent) {
@@ -891,7 +1007,6 @@ class LeafyViewModel(
             .removeSuffix(".tmac")
             .removeSuffix(".bitnet")
             .removeSuffix(".bin")
-            .replace("_", " ")
             .trim()
             .ifBlank { displayName }
 
@@ -1057,6 +1172,7 @@ class LeafyViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        inferenceEngine.releaseMountedResources()
         voiceHelper.shutdown()
     }
 
