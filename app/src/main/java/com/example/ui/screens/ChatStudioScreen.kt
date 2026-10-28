@@ -103,10 +103,21 @@ fun ChatStudioScreen(
 
     val listState = rememberLazyListState()
 
-    LaunchedEffect(uiState.activeBranchMessages.size, uiState.streamingPreview?.partialText) {
-        val totalItems = uiState.activeBranchMessages.size + (if (uiState.streamingPreview != null) 1 else 0)
+    val isStreaming = uiState.streamingPreview != null
+    LaunchedEffect(uiState.activeBranchMessages.size, isStreaming) {
+        val totalItems = uiState.activeBranchMessages.size + (if (isStreaming) 1 else 0)
         if (totalItems > 0) {
             listState.animateScrollToItem(totalItems - 1)
+        }
+    }
+
+    LaunchedEffect(uiState.streamingPreview?.partialText) {
+        if (uiState.streamingPreview != null) {
+            val totalItems = uiState.activeBranchMessages.size + 1
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            if (!listState.isScrollInProgress && lastVisible >= (totalItems - 2).coerceAtLeast(0)) {
+                listState.scrollToItem(totalItems - 1)
+            }
         }
     }
 

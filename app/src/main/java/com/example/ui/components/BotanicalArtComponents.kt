@@ -259,15 +259,15 @@ fun LeafyCleanTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (isChatFrontScreen) {
                 // Left: Organic Canopy Drawer button
                 Surface(
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(38.dp)
                         .clip(CircleShape)
                         .clickable(onClick = onOpenCanopyDrawer)
                         .testTag("open_canopy_drawer_button"),
@@ -280,7 +280,7 @@ fun LeafyCleanTopBar(
                             imageVector = Icons.Default.Menu,
                             contentDescription = "Open Leafy menu drawer",
                             tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(19.dp)
                         )
                     }
                 }
@@ -288,8 +288,7 @@ fun LeafyCleanTopBar(
                 // Center: Dedicated Local Model Switcher Pill (Strictly for Local Models)
                 Surface(
                     modifier = Modifier
-                        .weight(1f, fill = false)
-                        .padding(horizontal = 6.dp)
+                        .weight(1f)
                         .clip(RoundedCornerShape(50))
                         .clickable(onClick = onOpenModelSwitcher)
                         .testTag("top_model_switcher_pill"),
@@ -299,7 +298,9 @@ fun LeafyCleanTopBar(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -319,7 +320,7 @@ fun LeafyCleanTopBar(
                                 .background(dotColor)
                         )
                         Column(
-                            modifier = Modifier.weight(1f, fill = false),
+                            modifier = Modifier.weight(1f),
                             horizontalAlignment = Alignment.Start
                         ) {
                             Text(
@@ -354,7 +355,7 @@ fun LeafyCleanTopBar(
                     // Dedicated Runtime Engine Menu Button (Separate from Models & Modes)
                     Surface(
                         modifier = Modifier
-                            .size(40.dp)
+                            .size(38.dp)
                             .clip(CircleShape)
                             .clickable(onClick = onOpenRuntimeSwitcher)
                             .testTag("top_runtime_switcher_button"),
@@ -367,7 +368,7 @@ fun LeafyCleanTopBar(
                                 imageVector = Icons.Default.Memory,
                                 contentDescription = "Switch Inference Runtime (${activeRuntime.displayName})",
                                 tint = runtimeAccentColor(activeRuntime),
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -375,7 +376,7 @@ fun LeafyCleanTopBar(
                     // Power Modes & Studio Controls Button
                     Surface(
                         modifier = Modifier
-                            .size(40.dp)
+                            .size(38.dp)
                             .clip(CircleShape)
                             .clickable(onClick = onOpenSpecialCommandMenu)
                             .testTag("open_special_menu_button"),
@@ -388,14 +389,14 @@ fun LeafyCleanTopBar(
                                 imageVector = Icons.Default.Tune,
                                 contentDescription = "Power Modes & Studio Controls",
                                 tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
 
                     Surface(
                         modifier = Modifier
-                            .size(40.dp)
+                            .size(38.dp)
                             .clip(CircleShape)
                             .clickable(onClick = onOpenSettingsScreen)
                             .testTag("open_settings_screen_button"),
@@ -408,7 +409,7 @@ fun LeafyCleanTopBar(
                                 imageVector = Icons.Default.Settings,
                                 contentDescription = "Settings & Eco Studio",
                                 tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }

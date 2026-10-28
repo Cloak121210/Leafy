@@ -119,10 +119,14 @@ class OfflineVoiceHelper(context: Context) : TextToSpeech.OnInitListener {
 
     fun shutdown() {
         pendingUtterance = null
+        isReady = false
+        _speakingMessageId.value = null
         try {
             tts?.stop()
             tts?.shutdown()
         } catch (_: Exception) {
+        } finally {
+            tts = null
         }
     }
 }

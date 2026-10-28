@@ -283,6 +283,20 @@ class ModelDownloadManager(private val context: Context) {
     }.flowOn(Dispatchers.IO)
 
     /**
+     * Checks whether a file is an ExecuTorch / LLM companion tokenizer binary or vocabulary file
+     * rather than a standalone model weight archive.
+     */
+    fun isCompanionTokenizerFile(fileName: String): Boolean {
+        val lower = fileName.lowercase()
+        return lower == "tokenizer.bin" ||
+            lower == "tokenizer.model" ||
+            lower == "tokenizer.json" ||
+            lower.endsWith(".tokenizer.bin") ||
+            lower.endsWith(".tokenizer.model") ||
+            lower.endsWith(".tokenizer.json")
+    }
+
+    /**
      * Scans local app model directories and standard Download folder (if readable)
      * for real .gguf, .pte, .tmac, .bitnet, or .bin model files on disk.
      */
@@ -303,7 +317,7 @@ class ModelDownloadManager(private val context: Context) {
             if (!dir.exists() || !dir.canRead()) continue
             val files = dir.listFiles() ?: continue
             for (f in files) {
-                if (f.isFile && f.canRead() && f.length() >= 8L) {
+                if (f.isFile && f.canRead() && f.length() >= 8L && !isCompanionTokenizerFile(f.name)) {
                     val ext = f.extension.lowercase()
                     if (ext in supportedExts) {
                         discovered[f.absolutePath] = f

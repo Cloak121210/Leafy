@@ -111,7 +111,7 @@ fun LocalModelsScreen(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Text(
-                                text = "Select a real .gguf, .pte, .tmac, or .bitnet weight file from your phone's storage. Leafy verifies the binary header and mounts it locally.",
+                                text = "Select a real .gguf, .pte, .tmac, or .bitnet weight file (or companion tokenizer.bin / tokenizer.model for ExecuTorch) from device storage.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.88f)
                             )

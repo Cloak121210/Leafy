@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.leafy.vkmqxz"
     minSdk = 24
     targetSdk = 36
-    versionCode = 7
-    versionName = "v0.7"
+    versionCode = 8
+    versionName = "v0.8"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

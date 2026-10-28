@@ -171,7 +171,9 @@ fun LeafyAppShell(
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
                 containerColor = Color.Transparent,
-                contentWindowInsets = WindowInsets.safeDrawing,
+                contentWindowInsets = WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal
+                ),
                 topBar = {
                     val secondaryTitle = when (uiState.currentTab) {
                         LeafyTab.CHAT -> "Leafy"
@@ -247,7 +249,8 @@ fun LeafyAppShell(
                             onImportRagUri = viewModel::importRagDocumentFromUri,
                             onDeleteRagDoc = viewModel::deleteRagDocument,
                             onSelectPersona = viewModel::selectPersona,
-                            onSaveCustomPersona = viewModel::saveCustomPersona
+                            onSaveCustomPersona = viewModel::saveCustomPersona,
+                            onDeleteCustomPersona = viewModel::deleteCustomPersona
                         )
 
                         LeafyTab.ECO_SETTINGS -> EcoAndSettingsScreen(

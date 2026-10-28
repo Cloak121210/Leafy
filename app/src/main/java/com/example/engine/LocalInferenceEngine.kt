@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
@@ -77,6 +78,7 @@ class LocalInferenceEngine(
     private val context: Context? = null
 ) {
     private val inferenceMutex = Mutex()
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
     private var mountedLlamaContext: LlamaContext? = null
@@ -89,6 +91,9 @@ class LocalInferenceEngine(
 
     @Volatile
     private var mountedThreads: Int = 0
+
+    @Volatile
+    private var mountedFallbackUsed: Boolean = false
 
     @Volatile
     private var activeLlamaContext: LlamaContext? = null
@@ -125,23 +130,22 @@ class LocalInferenceEngine(
         val engine = activeLlamaEngine
         val ctxId = activeLlamaContextId
         if (engine != null && ctxId != null) {
-            try {
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        engine.stopCompletion(ctxId)
-                    } catch (_: Throwable) {}
-                }
-            } catch (_: Throwable) {}
+            engineScope.launch {
+                try {
+                    engine.stopCompletion(ctxId)
+                } catch (_: Throwable) {}
+            }
         }
     }
 
     /**
      * Stops any ongoing generation and frees the mounted native context from RAM.
      * Called when switching models, switching to a non-GGUF runtime, or clearing the ViewModel.
+     * Guarded by inferenceMutex so native release() never races with an active completion call.
      */
     fun releaseMountedResources() {
         stopInference()
-        CoroutineScope(Dispatchers.IO).launch {
+        engineScope.launch {
             inferenceMutex.withLock {
                 unmountLlamaContextLocked()
             }
@@ -154,6 +158,7 @@ class LocalInferenceEngine(
         mountedModelPath = null
         mountedCtxSize = 0
         mountedThreads = 0
+        mountedFallbackUsed = false
         if (existing != null) {
             try {
                 existing.stopCompletion()
@@ -309,11 +314,13 @@ class LocalInferenceEngine(
         val clampedThreads = requestedThreads.coerceIn(1, 8)
 
         val existing = mountedLlamaContext
+        val expectedThreads = if (mountedFallbackUsed) clampedThreads.coerceAtMost(4) else clampedThreads
+        val ctxMatches = mountedCtxSize == primaryCtxSize || (mountedFallbackUsed && mountedCtxSize == 512)
         if (existing != null &&
             existing.context != 0L &&
             mountedModelPath == canonicalPath &&
-            mountedCtxSize == primaryCtxSize &&
-            mountedThreads == clampedThreads
+            ctxMatches &&
+            mountedThreads == expectedThreads
         ) {
             return existing
         }
@@ -333,7 +340,13 @@ class LocalInferenceEngine(
 
         val primaryBatch = minOf(preferredBatchSize, primaryCtxSize)
 
-        data class InitAttempt(val nCtx: Int, val nBatch: Int, val nThreads: Int, val useMmap: Boolean)
+        data class InitAttempt(
+            val nCtx: Int,
+            val nBatch: Int,
+            val nThreads: Int,
+            val useMmap: Boolean,
+            val isFallback: Boolean
+        )
 
         // Note: Llamacpp-kotlin's LlamaHelper uses use_mmap = false as primary when passing detached model_fd
         val attempts = listOf(
@@ -341,25 +354,29 @@ class LocalInferenceEngine(
                 nCtx = primaryCtxSize,
                 nBatch = primaryBatch,
                 nThreads = clampedThreads,
-                useMmap = false
+                useMmap = false,
+                isFallback = false
             ),
             InitAttempt(
                 nCtx = primaryCtxSize,
                 nBatch = primaryBatch,
                 nThreads = clampedThreads,
-                useMmap = true
+                useMmap = true,
+                isFallback = false
             ),
             InitAttempt(
                 nCtx = 512,
                 nBatch = 256,
                 nThreads = clampedThreads.coerceAtMost(4),
-                useMmap = false
+                useMmap = false,
+                isFallback = true
             ),
             InitAttempt(
                 nCtx = 512,
                 nBatch = 256,
                 nThreads = clampedThreads.coerceAtMost(4),
-                useMmap = true
+                useMmap = true,
+                isFallback = true
             )
         )
 
@@ -389,8 +406,9 @@ class LocalInferenceEngine(
                 if (llamaCtx.context != 0L) {
                     mountedLlamaContext = llamaCtx
                     mountedModelPath = canonicalPath
-                    mountedCtxSize = primaryCtxSize
-                    mountedThreads = clampedThreads
+                    mountedCtxSize = attempt.nCtx
+                    mountedThreads = attempt.nThreads
+                    mountedFallbackUsed = attempt.isFallback
                     return llamaCtx
                 }
                 try { llamaCtx.release() } catch (_: Throwable) {}
@@ -409,10 +427,30 @@ class LocalInferenceEngine(
     }
 
     /**
+     * Computes a safe generation budget (`n_predict`) and maximum prompt character budget
+     * so that `prompt_tokens + n_predict` never overflows the mounted native `n_ctx`.
+     */
+    private fun computeGenerationTokenBudget(effectiveCtxSize: Int): Int {
+        val safeCtx = effectiveCtxSize.coerceIn(512, 4096)
+        return (safeCtx / 3).coerceIn(128, 512)
+    }
+
+    private fun computeMaxPromptChars(effectiveCtxSize: Int, nPredict: Int): Int {
+        val safeCtx = effectiveCtxSize.coerceIn(512, 4096)
+        val availablePromptTokens = (safeCtx - nPredict - 32).coerceAtLeast(160)
+        // Approximate 3.2 characters per token with safety margin for chat template markers
+        return (availablePromptTokens * 3).coerceAtLeast(480)
+    }
+
+    /**
      * Filters conversation history to recent clean messages so multi-turn context stays within the window.
      */
-    private fun filterRecentHistory(history: List<MessageNodeEntity>): List<MessageNodeEntity> {
-        if (history.isEmpty()) return emptyList()
+    private fun filterRecentHistory(
+        history: List<MessageNodeEntity>,
+        maxTurns: Int = 6,
+        maxCharsPerTurn: Int = 500
+    ): List<MessageNodeEntity> {
+        if (history.isEmpty() || maxTurns <= 0) return emptyList()
         return history
             .filter { node ->
                 node.content.isNotBlank() &&
@@ -424,13 +462,14 @@ class LocalInferenceEngine(
                     !node.content.startsWith("T-MAC") &&
                     !node.content.startsWith("Native runtime notice:")
             }
-            .takeLast(6)
+            .takeLast(maxTurns)
+            .map { it.copy(content = it.content.trim().take(maxCharsPerTurn)) }
     }
 
     /**
      * Resolves the best chat prompt for the loaded GGUF model by attempting native
      * GGUF chat_template formatting (supporting LFM2.5, Llama-3, Qwen, Gemma, ChatML)
-     * and falling back to standard ChatML formatting.
+     * and falling back to standard ChatML formatting, strictly bounded to `effectiveCtxSize`.
      */
     private fun resolveModelChatPrompt(
         llamaCtx: LlamaContext,
@@ -438,30 +477,61 @@ class LocalInferenceEngine(
         persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
-        fallbackFormattedPrompt: String
+        fallbackFormattedPrompt: String,
+        effectiveCtxSize: Int = 2048
     ): String {
+        val nPredict = computeGenerationTokenBudget(effectiveCtxSize)
+        val maxPromptChars = computeMaxPromptChars(effectiveCtxSize, nPredict)
+        val maxTurns = if (effectiveCtxSize <= 512) 2 else if (effectiveCtxSize <= 1024) 4 else 6
+        val maxTurnChars = if (effectiveCtxSize <= 512) 220 else 500
+        val maxRagChars = if (effectiveCtxSize <= 512) 180 else 300
+
         val ragContextText = if (retrievedRag.isNotEmpty()) {
             "\n\nContext from device knowledge:\n" + retrievedRag.joinToString("\n\n") {
-                "Document: ${it.documentTitle}\nPassage: ${it.matchedPassage}"
+                "Document: ${it.documentTitle}\nPassage: ${it.matchedPassage.take(maxRagChars)}"
             }
         } else ""
-        val systemInstruction = "${persona.systemPrompt}$ragContextText".trim()
+        val systemInstruction = "${persona.systemPrompt.take(400)}$ragContextText".trim()
+        val boundedUserPrompt = userPrompt.trim().take((maxPromptChars / 2).coerceAtLeast(240))
 
-        return try {
-            val messages = mutableListOf<Map<String, Any>>(
-                mapOf("role" to "system", "content" to systemInstruction)
+        var turnsToKeep = maxTurns
+        while (turnsToKeep >= 0) {
+            val boundedHistory = filterRecentHistory(conversationHistory, turnsToKeep, maxTurnChars)
+            val candidateFallback = buildFormattedPrompt(
+                userPrompt = boundedUserPrompt,
+                persona = persona,
+                ragSnippets = retrievedRag,
+                conversationHistory = boundedHistory,
+                effectiveCtxSize = effectiveCtxSize
             )
-            for (hist in filterRecentHistory(conversationHistory)) {
-                val role = if (hist.role.equals("USER", ignoreCase = true)) "user" else "assistant"
-                messages.add(mapOf("role" to role, "content" to hist.content.trim().take(600)))
-            }
-            messages.add(mapOf("role" to "user", "content" to userPrompt.trim()))
 
-            val nativeFormatted = llamaCtx.getFormattedChat(messages, "")
-            if (nativeFormatted.isNotBlank()) nativeFormatted else fallbackFormattedPrompt
-        } catch (_: Throwable) {
-            fallbackFormattedPrompt
+            val resolved = try {
+                val messages = mutableListOf<Map<String, Any>>(
+                    mapOf("role" to "system", "content" to systemInstruction)
+                )
+                for (hist in boundedHistory) {
+                    val role = if (hist.role.equals("USER", ignoreCase = true)) "user" else "assistant"
+                    messages.add(mapOf("role" to role, "content" to hist.content))
+                }
+                messages.add(mapOf("role" to "user", "content" to boundedUserPrompt))
+
+                val nativeFormatted = llamaCtx.getFormattedChat(messages, "")
+                if (nativeFormatted.isNotBlank()) nativeFormatted else candidateFallback
+            } catch (_: Throwable) {
+                candidateFallback
+            }
+
+            if (resolved.length <= maxPromptChars || turnsToKeep == 0) {
+                return if (resolved.length > maxPromptChars) {
+                    resolved.takeLast(maxPromptChars)
+                } else {
+                    resolved
+                }
+            }
+            turnsToKeep--
         }
+
+        return fallbackFormattedPrompt.takeLast(maxPromptChars)
     }
 
     /**
@@ -521,6 +591,8 @@ class LocalInferenceEngine(
                     preferredBatchSize = 512
                 )
                 activeLlamaContext = llamaCtx
+                val effectiveCtx = mountedCtxSize.takeIf { it > 0 } ?: targetCtx
+                val nPredict = computeGenerationTokenBudget(effectiveCtx)
 
                 val effectivePrompt = resolveModelChatPrompt(
                     llamaCtx = llamaCtx,
@@ -528,7 +600,8 @@ class LocalInferenceEngine(
                     persona = persona,
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
-                    fallbackFormattedPrompt = formattedPrompt
+                    fallbackFormattedPrompt = formattedPrompt,
+                    effectiveCtxSize = effectiveCtx
                 )
 
                 val tokenChannel = Channel<String>(Channel.UNLIMITED)
@@ -540,17 +613,17 @@ class LocalInferenceEngine(
 
                 val completionParams = mapOf<String, Any>(
                     "prompt" to effectivePrompt,
-                    "n_predict" to 512,
+                    "n_predict" to nPredict,
                     "temperature" to persona.temperature.toDouble(),
                     "top_p" to persona.topP.toDouble(),
                     "penalty_repeat" to persona.repeatPenalty.toDouble(),
                     "emit_partial_completion" to true,
-                    "n_threads" to powerProfile.cpuThreads,
+                    "n_threads" to (mountedThreads.takeIf { it > 0 }?.coerceAtMost(powerProfile.cpuThreads) ?: powerProfile.cpuThreads),
                     "stop" to STOP_SEQUENCES
                 )
 
                 var finalCompletionText: String? = null
-                completionJob = CoroutineScope(Dispatchers.IO).launch {
+                completionJob = engineScope.launch {
                     try {
                         val result = llamaCtx.completion(completionParams)
                         finalCompletionText = result["text"] as? String
@@ -717,6 +790,8 @@ class LocalInferenceEngine(
                     preferredBatchSize = 256
                 )
                 activeLlamaContext = llamaCtx
+                val effectiveCtx = mountedCtxSize.takeIf { it > 0 } ?: targetCtx
+                val nPredict = computeGenerationTokenBudget(effectiveCtx)
 
                 val effectivePrompt = resolveModelChatPrompt(
                     llamaCtx = llamaCtx,
@@ -724,7 +799,8 @@ class LocalInferenceEngine(
                     persona = persona,
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
-                    fallbackFormattedPrompt = formattedPrompt
+                    fallbackFormattedPrompt = formattedPrompt,
+                    effectiveCtxSize = effectiveCtx
                 )
 
                 val tokenChannel = Channel<String>(Channel.UNLIMITED)
@@ -736,19 +812,19 @@ class LocalInferenceEngine(
 
                 val completionParams = mapOf<String, Any>(
                     "prompt" to effectivePrompt,
-                    "n_predict" to 512,
+                    "n_predict" to nPredict,
                     "temperature" to persona.temperature.toDouble(),
                     "top_p" to persona.topP.toDouble(),
                     "min_p" to 0.05,
                     "typical_p" to 1.0,
                     "penalty_repeat" to persona.repeatPenalty.toDouble(),
                     "emit_partial_completion" to true,
-                    "n_threads" to powerProfile.cpuThreads,
+                    "n_threads" to (mountedThreads.takeIf { it > 0 }?.coerceAtMost(powerProfile.cpuThreads) ?: powerProfile.cpuThreads),
                     "stop" to STOP_SEQUENCES
                 )
 
                 var finalCompletionText: String? = null
-                completionJob = CoroutineScope(Dispatchers.IO).launch {
+                completionJob = engineScope.launch {
                     try {
                         val result = llamaCtx.completion(completionParams)
                         finalCompletionText = result["text"] as? String
@@ -934,11 +1010,20 @@ class LocalInferenceEngine(
                     activeExecuTorchLlmModule = llmModule
                     llmModule.load()
 
-                    genJob = CoroutineScope(Dispatchers.IO).launch {
+                    genJob = engineScope.launch {
                         try {
+                            val targetCtx = powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512))
+                            val nPredict = computeGenerationTokenBudget(targetCtx)
+                            val boundedPrompt = buildFormattedPrompt(
+                                userPrompt = rawUserPrompt,
+                                persona = persona,
+                                ragSnippets = retrievedRag,
+                                conversationHistory = conversationHistory,
+                                effectiveCtxSize = targetCtx
+                            )
                             llmModule.generate(
-                                formattedPrompt,
-                                512,
+                                boundedPrompt,
+                                nPredict,
                                 object : LlmCallback {
                                     override fun onResult(result: String) {
                                         if (!isCancelled && result.isNotEmpty()) {
@@ -1039,67 +1124,21 @@ class LocalInferenceEngine(
                 return@withLock
             }
 
-            // Direct ExecuTorch Module.load execution when no external tokenizer binary is present
+            // When no companion tokenizer binary is found, verify Module.load() on the .pte flatbuffer
+            // and provide clear instructions to import tokenizer.bin / tokenizer.model instead of feeding raw UTF-16 codepoints.
             var module: Module? = null
             try {
                 val startTimeMs = System.currentTimeMillis()
                 module = Module.load(modelFile.absolutePath, Module.LOAD_MODE_MMAP)
-
-                val inputTokens = formattedPrompt.map { it.code.toLong() }.toLongArray()
-                val inputTensor = Tensor.fromBlob(inputTokens, longArrayOf(1, inputTokens.size.toLong()))
-                val inputs = arrayOf(EValue.from(inputTensor))
-
-                val outputs = module.forward(*inputs)
-                val firstTokenTimeMs = System.currentTimeMillis()
-
-                val accumulated = StringBuilder()
-                var tokenCount = 0
-                val execMilliwatts = powerProfile.estimatedMilliwatts / AiRuntime.EXECUTORCH.energyEfficiencyMultiplier
-
-                if (outputs.isNotEmpty()) {
-                    val outputTensor = outputs[0].toTensor()
-                    val outputData = outputTensor.dataAsLongArray
-
-                    for (tokenCode in outputData) {
-                        if (isCancelled) break
-                        val char = if (tokenCode in 32..126 || tokenCode == 10L) tokenCode.toInt().toChar().toString() else " "
-                        accumulated.append(char)
-                        tokenCount++
-
-                        val now = System.currentTimeMillis()
-                        val elapsedSec = ((now - startTimeMs) / 1000f).coerceAtLeast(0.001f)
-                        val liveTps = tokenCount / elapsedSec
-                        val ttftMs = (firstTokenTimeMs - startTimeMs).toInt()
-                        val liveEnergy = (elapsedSec * execMilliwatts) / 3.6f
-
-                        emit(
-                            StreamingStep(
-                                accumulatedText = accumulated.toString(),
-                                currentTps = liveTps,
-                                ttftMs = ttftMs,
-                                generatedTokens = tokenCount,
-                                energyMicroWh = liveEnergy,
-                                citedRagSnippets = retrievedRag,
-                                isFinished = false
-                            )
-                        )
-                    }
-                }
-
-                val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
-                val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
-                val finalTtft = (firstTokenTimeMs - startTimeMs).toInt()
-                val finalEnergy = (totalSec * execMilliwatts) / 3.6f
+                val loadElapsedMs = (System.currentTimeMillis() - startTimeMs).toInt().coerceAtLeast(1)
 
                 emit(
                     StreamingStep(
-                        accumulatedText = accumulated.toString().ifBlank {
-                            "ExecuTorch Module forward pass completed on '${modelFile.name}' (0 decoded tokens; place companion tokenizer.bin/tokenizer.model in the models folder for full LlmModule decoding)."
-                        },
-                        currentTps = finalTps,
-                        ttftMs = finalTtft,
-                        generatedTokens = tokenCount,
-                        energyMicroWh = finalEnergy,
+                        accumulatedText = "ExecuTorch PTE graph '${modelFile.name}' (${model.sizeMb} MB) verified and mounted via MMAP in ${loadElapsedMs} ms, but no companion tokenizer file was found.\n\nTo run generative text decoding with ExecuTorch LlmModule, open Local Models → tap 'Select Model File' and import your companion 'tokenizer.bin' or 'tokenizer.model' file.",
+                        currentTps = 0f,
+                        ttftMs = loadElapsedMs,
+                        generatedTokens = 0,
+                        energyMicroWh = 0f,
                         citedRagSnippets = retrievedRag,
                         isFinished = true
                     )
@@ -1138,25 +1177,40 @@ class LocalInferenceEngine(
     }
 
     private fun findCompanionTokenizerFile(pteFile: File): File? {
-        val parent = pteFile.parentFile ?: return null
+        val searchDirs = mutableListOf<File>()
+        pteFile.parentFile?.let { searchDirs.add(it) }
+        context?.getExternalFilesDir("models")?.let { if (it !in searchDirs) searchDirs.add(it) }
+        context?.filesDir?.let {
+            val internalModels = File(it, "models")
+            if (internalModels !in searchDirs) searchDirs.add(internalModels)
+        }
+
         val candidates = listOf(
+            "${pteFile.nameWithoutExtension}.tokenizer.bin",
+            "${pteFile.nameWithoutExtension}.tokenizer.model",
+            "${pteFile.nameWithoutExtension}.tokenizer.json",
             "tokenizer.bin",
             "tokenizer.model",
-            "tokenizer.json",
-            "${pteFile.nameWithoutExtension}.tokenizer.bin",
-            "${pteFile.nameWithoutExtension}.tokenizer.model"
+            "tokenizer.json"
         )
-        for (name in candidates) {
-            val f = File(parent, name)
-            if (f.exists() && f.isFile && f.length() > 0L) {
-                return f
+
+        for (dir in searchDirs) {
+            if (!dir.exists() || !dir.isDirectory) continue
+            for (name in candidates) {
+                val f = File(dir, name)
+                if (f.exists() && f.isFile && f.length() > 0L) {
+                    return f
+                }
             }
+            val matched = dir.listFiles()?.firstOrNull {
+                it.isFile && it.length() > 0L &&
+                    (it.name.endsWith("tokenizer.bin", ignoreCase = true) ||
+                        it.name.endsWith("tokenizer.model", ignoreCase = true) ||
+                        it.name.endsWith("tokenizer.json", ignoreCase = true))
+            }
+            if (matched != null) return matched
         }
-        return parent.listFiles()?.firstOrNull {
-            it.isFile && it.length() > 0L &&
-                (it.name.endsWith("tokenizer.bin", ignoreCase = true) ||
-                    it.name.endsWith("tokenizer.model", ignoreCase = true))
-        }
+        return null
     }
 
     /**
@@ -1216,6 +1270,8 @@ class LocalInferenceEngine(
                         preferredBatchSize = 256
                     )
                     activeLlamaContext = llamaCtx
+                    val effectiveCtx = mountedCtxSize.takeIf { it > 0 } ?: targetCtx
+                    val nPredict = computeGenerationTokenBudget(effectiveCtx)
 
                     val effectivePrompt = resolveModelChatPrompt(
                         llamaCtx = llamaCtx,
@@ -1223,7 +1279,8 @@ class LocalInferenceEngine(
                         persona = persona,
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
-                        fallbackFormattedPrompt = formattedPrompt
+                        fallbackFormattedPrompt = formattedPrompt,
+                        effectiveCtxSize = effectiveCtx
                     )
 
                     val tokenChannel = Channel<String>(Channel.UNLIMITED)
@@ -1235,17 +1292,17 @@ class LocalInferenceEngine(
 
                     val completionParams = mapOf<String, Any>(
                         "prompt" to effectivePrompt,
-                        "n_predict" to 512,
+                        "n_predict" to nPredict,
                         "temperature" to persona.temperature.toDouble(),
                         "top_p" to persona.topP.toDouble(),
                         "penalty_repeat" to persona.repeatPenalty.toDouble(),
                         "emit_partial_completion" to true,
-                        "n_threads" to powerProfile.cpuThreads,
+                        "n_threads" to (mountedThreads.takeIf { it > 0 }?.coerceAtMost(powerProfile.cpuThreads) ?: powerProfile.cpuThreads),
                         "stop" to STOP_SEQUENCES
                     )
 
                     var finalCompletionText: String? = null
-                    completionJob = CoroutineScope(Dispatchers.IO).launch {
+                    completionJob = engineScope.launch {
                         try {
                             val result = llamaCtx.completion(completionParams)
                             finalCompletionText = result["text"] as? String
@@ -1386,24 +1443,29 @@ class LocalInferenceEngine(
         userPrompt: String,
         persona: PersonaPresetEntity,
         ragSnippets: List<RetrievedRagSnippet>,
-        conversationHistory: List<MessageNodeEntity> = emptyList()
+        conversationHistory: List<MessageNodeEntity> = emptyList(),
+        effectiveCtxSize: Int = 2048
     ): String {
+        val maxTurns = if (effectiveCtxSize <= 512) 2 else if (effectiveCtxSize <= 1024) 4 else 6
+        val maxTurnChars = if (effectiveCtxSize <= 512) 220 else 500
+        val maxRagChars = if (effectiveCtxSize <= 512) 180 else 300
+
         val ragContextText = if (ragSnippets.isNotEmpty()) {
             "\n\nContext from device knowledge:\n" + ragSnippets.joinToString("\n\n") {
-                "Document: ${it.documentTitle}\nPassage: ${it.matchedPassage}"
+                "Document: ${it.documentTitle}\nPassage: ${it.matchedPassage.take(maxRagChars)}"
             }
         } else ""
 
-        val systemInstruction = "${persona.systemPrompt}$ragContextText".trim()
+        val systemInstruction = "${persona.systemPrompt.take(400)}$ragContextText".trim()
 
         return buildString {
             append("<|im_start|>system\n")
             append(systemInstruction)
             append("<|im_end|>\n")
-            for (hist in filterRecentHistory(conversationHistory)) {
+            for (hist in filterRecentHistory(conversationHistory, maxTurns, maxTurnChars)) {
                 val role = if (hist.role.equals("USER", ignoreCase = true)) "user" else "assistant"
-                append("<|im_start|>$role\n")
-                append(hist.content.trim().take(600))
+                append("<|im_start|>").append(role).append("\n")
+                append(hist.content.trim())
                 append("<|im_end|>\n")
             }
             append("<|im_start|>user\n")

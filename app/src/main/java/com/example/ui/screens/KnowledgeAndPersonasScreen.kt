@@ -66,6 +66,7 @@ fun KnowledgeAndPersonasScreen(
     onDeleteRagDoc: (Long) -> Unit,
     onSelectPersona: (PersonaPresetEntity) -> Unit,
     onSaveCustomPersona: (String, String, String, Float, Float) -> Unit,
+    onDeleteCustomPersona: (PersonaPresetEntity) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showAddDocDialog by remember { mutableStateOf(false) }
@@ -361,21 +362,38 @@ fun KnowledgeAndPersonasScreen(
                             }
                         }
 
-                        Button(
-                            onClick = { onSelectPersona(persona) },
-                            enabled = !isSelected,
-                            modifier = Modifier.testTag("activate_persona_${persona.id}")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Active")
-                            } else {
-                                Text("Use Persona")
+                            Button(
+                                onClick = { onSelectPersona(persona) },
+                                enabled = !isSelected,
+                                modifier = Modifier.testTag("activate_persona_${persona.id}")
+                            ) {
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Active")
+                                } else {
+                                    Text("Use Persona")
+                                }
+                            }
+                            if (!persona.isBuiltIn) {
+                                IconButton(
+                                    onClick = { onDeleteCustomPersona(persona) },
+                                    modifier = Modifier.testTag("delete_persona_${persona.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Delete custom persona",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }

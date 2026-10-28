@@ -19,14 +19,21 @@ import com.example.engine.HardwareTelemetrySnapshot
 import com.example.engine.LocalInferenceEngine
 import com.example.engine.ModelDownloadManager
 import com.example.engine.OfflineVoiceHelper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -96,15 +103,25 @@ class LeafyViewModel(
     private val fileManager: ModelDownloadManager
 ) : ViewModel() {
 
+    private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
     private val _currentTab = MutableStateFlow(LeafyTab.CHAT)
-    private val _activeConversationId = MutableStateFlow<Long?>(null)
-    private val _selectedRuntime = MutableStateFlow<AiRuntime?>(null)
-    private val _selectedModelId = MutableStateFlow<String?>(null)
-    private val _powerProfile = MutableStateFlow(PowerProfile.ECO)
+    private val _activeConversationId = MutableStateFlow<Long?>(
+        prefs.getLong(KEY_ACTIVE_CONV_ID, -1L).takeIf { it > 0L }
+    )
+    private val _selectedRuntime = MutableStateFlow<AiRuntime?>(
+        prefs.getString(KEY_SELECTED_RUNTIME, null)?.takeIf { it.isNotBlank() }?.let { AiRuntime.fromId(it) }
+    )
+    private val _selectedModelId = MutableStateFlow<String?>(
+        prefs.getString(KEY_SELECTED_MODEL_ID, null)?.takeIf { it.isNotBlank() }
+    )
+    private val _powerProfile = MutableStateFlow(
+        prefs.getString(KEY_POWER_PROFILE, null)?.let { PowerProfile.fromId(it) } ?: PowerProfile.ECO
+    )
     private val _streamingPreview = MutableStateFlow<StreamingPreviewState?>(null)
     private val _telemetry = MutableStateFlow(HardwareTelemetrySnapshot())
-    private val _useComicSans = MutableStateFlow(false)
-    private val _isDarkTheme = MutableStateFlow(false)
+    private val _useComicSans = MutableStateFlow(prefs.getBoolean(KEY_USE_COMIC_SANS, false))
+    private val _isDarkTheme = MutableStateFlow(prefs.getBoolean(KEY_IS_DARK_THEME, false))
     private val _statusBannerMessage = MutableStateFlow<String?>(null)
     private val _totalSessionTokens = MutableStateFlow(0)
     private val _isImportingModel = MutableStateFlow(false)
@@ -113,14 +130,28 @@ class LeafyViewModel(
 
     private var streamingJob: Job? = null
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val activeConversationMessagesFlow = combine(
+        repository.conversations,
+        _activeConversationId
+    ) { conversations, requestedId ->
+        (conversations.find { it.id == requestedId } ?: conversations.firstOrNull())?.id
+    }.distinctUntilChanged().flatMapLatest { activeId ->
+        if (activeId != null) {
+            repository.observeMessages(activeId)
+        } else {
+            flowOf(emptyList())
+        }
+    }
+
     private val baseDataFlow = combine(
         repository.conversations,
-        repository.allMessages,
+        activeConversationMessagesFlow,
         repository.localModels,
         repository.ragDocuments,
         repository.personas
-    ) { conversations, allMessages, models, ragDocs, personas ->
-        quintuple(conversations, allMessages, models, ragDocs, personas)
+    ) { conversations, activeMessages, models, ragDocs, personas ->
+        quintuple(conversations, activeMessages, models, ragDocs, personas)
     }
 
     private val preferencesFlow = combine(
@@ -254,13 +285,15 @@ class LeafyViewModel(
             if (existingConvs.isEmpty()) {
                 val newId = repository.createConversation(
                     title = "Local AI Session",
-                    modelId = "",
-                    runtimeId = AiRuntime.LLAMA_CPP.id,
+                    modelId = _selectedModelId.value ?: "",
+                    runtimeId = (_selectedRuntime.value ?: AiRuntime.LLAMA_CPP).id,
                     personaId = 1L
                 )
-                _activeConversationId.value = newId
+                setActiveConversationPref(newId)
             } else {
-                _activeConversationId.value = existingConvs.first().id
+                val savedId = _activeConversationId.value
+                val targetConv = existingConvs.find { it.id == savedId } ?: existingConvs.first()
+                setActiveConversationPref(targetConv.id)
             }
             // Automatically discover any existing model files in the app's models directory
             scanDeviceForLocalModels(silent = true)
@@ -310,13 +343,31 @@ class LeafyViewModel(
         }
     }
 
+    private fun setActiveConversationPref(id: Long?) {
+        _activeConversationId.value = id
+        prefs.edit().putLong(KEY_ACTIVE_CONV_ID, id ?: -1L).apply()
+    }
+
+    private fun setRuntimeAndModelPrefs(runtime: AiRuntime?, modelId: String?) {
+        _selectedRuntime.value = runtime
+        _selectedModelId.value = modelId
+        prefs.edit()
+            .putString(KEY_SELECTED_RUNTIME, runtime?.id ?: "")
+            .putString(KEY_SELECTED_MODEL_ID, modelId ?: "")
+            .apply()
+    }
+
     fun selectTab(tab: LeafyTab) {
         _currentTab.value = tab
+        if (tab == LeafyTab.ECO_SETTINGS) {
+            refreshTelemetry()
+        }
     }
 
     fun toggleComicSans() {
         val next = !_useComicSans.value
         _useComicSans.value = next
+        prefs.edit().putBoolean(KEY_USE_COMIC_SANS, next).apply()
         showTransientBanner(
             if (next) "Comic Sans Mode enabled."
             else "Rounded Sans-Serif typography active."
@@ -325,15 +376,19 @@ class LeafyViewModel(
 
     fun setComicSans(enabled: Boolean) {
         _useComicSans.value = enabled
+        prefs.edit().putBoolean(KEY_USE_COMIC_SANS, enabled).apply()
     }
 
     fun toggleDarkTheme() {
-        _isDarkTheme.value = !_isDarkTheme.value
+        val next = !_isDarkTheme.value
+        _isDarkTheme.value = next
+        prefs.edit().putBoolean(KEY_IS_DARK_THEME, next).apply()
     }
 
     fun setPowerProfile(profile: PowerProfile) {
         val changed = _powerProfile.value != profile
         _powerProfile.value = profile
+        prefs.edit().putString(KEY_POWER_PROFILE, profile.id).apply()
         if (changed && _streamingPreview.value == null) {
             inferenceEngine.releaseMountedResources()
         }
@@ -347,10 +402,12 @@ class LeafyViewModel(
             val targetConv = uiState.value.conversations.find { it.id == conversationId }
                 ?: repository.conversations.first().find { it.id == conversationId }
             if (targetConv != null) {
-                _selectedRuntime.value = AiRuntime.fromId(targetConv.activeRuntimeId)
-                _selectedModelId.value = targetConv.activeModelId.takeIf { it.isNotBlank() }
+                setRuntimeAndModelPrefs(
+                    runtime = AiRuntime.fromId(targetConv.activeRuntimeId),
+                    modelId = targetConv.activeModelId.takeIf { it.isNotBlank() }
+                )
             }
-            _activeConversationId.value = conversationId
+            setActiveConversationPref(conversationId)
             _currentTab.value = LeafyTab.CHAT
         }
     }
@@ -368,7 +425,7 @@ class LeafyViewModel(
                 runtimeId = runtimeId,
                 personaId = personaId
             )
-            _activeConversationId.value = newId
+            setActiveConversationPref(newId)
             _currentTab.value = LeafyTab.CHAT
         }
     }
@@ -391,12 +448,14 @@ class LeafyViewModel(
                     runtimeId = runtimeId,
                     personaId = personaId
                 )
-                _activeConversationId.value = newId
+                setActiveConversationPref(newId)
             } else if (_activeConversationId.value == conversationId) {
                 val nextConv = remaining.first()
-                _selectedRuntime.value = AiRuntime.fromId(nextConv.activeRuntimeId)
-                _selectedModelId.value = nextConv.activeModelId.takeIf { it.isNotBlank() }
-                _activeConversationId.value = nextConv.id
+                setRuntimeAndModelPrefs(
+                    runtime = AiRuntime.fromId(nextConv.activeRuntimeId),
+                    modelId = nextConv.activeModelId.takeIf { it.isNotBlank() }
+                )
+                setActiveConversationPref(nextConv.id)
             }
         }
     }
@@ -423,8 +482,7 @@ class LeafyViewModel(
                 inferenceEngine.releaseMountedResources()
             }
 
-            _selectedModelId.value = model.id
-            _selectedRuntime.value = targetRuntime
+            setRuntimeAndModelPrefs(runtime = targetRuntime, modelId = model.id)
 
             val currentConv = uiState.value.activeConversation
                 ?: repository.conversations.first().let { convs ->
@@ -459,8 +517,7 @@ class LeafyViewModel(
                 ?: compatibleModels.find { AiRuntime.fromId(it.runtimeId) == runtime }
                 ?: compatibleModels.firstOrNull()
 
-            _selectedRuntime.value = runtime
-            _selectedModelId.value = preferredModel?.id
+            setRuntimeAndModelPrefs(runtime = runtime, modelId = preferredModel?.id)
 
             val currentConv = uiState.value.activeConversation
                 ?: repository.conversations.first().let { convs ->
@@ -733,6 +790,8 @@ class LeafyViewModel(
             var finalTokens = 0
             var finalEnergy = 0f
             var finalCitations = emptyList<String>()
+            var wasCancelled = false
+            var streamError: String? = null
 
             try {
                 inferenceEngine.streamResponse(
@@ -765,8 +824,13 @@ class LeafyViewModel(
                         quantization = model.quantization
                     )
                 }
+            } catch (ce: CancellationException) {
+                wasCancelled = true
+                throw ce
+            } catch (t: Throwable) {
+                streamError = t.message ?: t.javaClass.simpleName
             } finally {
-                withContext(kotlinx.coroutines.NonCancellable) {
+                withContext(NonCancellable) {
                     _streamingPreview.value = null
                     _totalSessionTokens.value += finalTokens
                     refreshTelemetry()
@@ -775,13 +839,28 @@ class LeafyViewModel(
                         repository.updateLocalModel(model.copy(expectedTps = finalTps))
                     }
 
-                    if (finalStepText.isNotBlank()) {
+                    val contentToPersist = when {
+                        finalStepText.isNotBlank() && wasCancelled ->
+                            "${finalStepText.trimEnd()}\n\n_[Generation stopped by user]_"
+                        finalStepText.isNotBlank() ->
+                            finalStepText
+                        streamError != null ->
+                            "**[Local Inference Error]** Could not complete generation on `${runtime.displayName}`: $streamError"
+                        else -> ""
+                    }
+
+                    if (contentToPersist.isNotBlank()) {
+                        val noteSuffix = when {
+                            wasCancelled -> " • Stopped"
+                            streamError != null -> " • Error"
+                            else -> ""
+                        }
                         repository.insertMessageNode(
                             MessageNodeEntity(
                                 conversationId = conversationId,
                                 parentId = parentUserNodeId,
                                 role = "ASSISTANT",
-                                content = finalStepText,
+                                content = contentToPersist,
                                 runtimeId = runtime.id,
                                 modelName = model.name,
                                 quantization = model.quantization,
@@ -791,9 +870,13 @@ class LeafyViewModel(
                                 tokenCount = finalTokens,
                                 energyMicroWh = finalEnergy,
                                 citedRagTitles = finalCitations.joinToString("|"),
-                                branchNote = "${runtime.displayName} • ${model.quantization}"
+                                branchNote = "${runtime.displayName} • ${model.quantization}$noteSuffix"
                             )
                         )
+                    }
+
+                    if (streamError != null) {
+                        showTransientBanner("Inference error: $streamError")
                     }
                 }
             }
@@ -835,7 +918,7 @@ class LeafyViewModel(
             if (uiState.value.activeModel?.id == model.id || _selectedModelId.value == model.id) {
                 stopStreaming()
                 inferenceEngine.releaseMountedResources()
-                _selectedModelId.value = null
+                setRuntimeAndModelPrefs(runtime = _selectedRuntime.value, modelId = null)
             }
             fileManager.deleteModelFile(model.localFilePath)
             repository.deleteLocalModel(model.id)
@@ -948,6 +1031,13 @@ class LeafyViewModel(
             return@withContext null
         }
 
+        if (fileManager.isCompanionTokenizerFile(displayName) || fileManager.isCompanionTokenizerFile(file.name)) {
+            if (!silentInvalid) {
+                showTransientBanner("Imported companion tokenizer '${displayName}' (${file.length() / 1024} KB) for ExecuTorch .pte models.")
+            }
+            return@withContext null
+        }
+
         val ggufHeader = inferenceEngine.readGgufHeader(file)
         val pteHeader = inferenceEngine.readPteHeader(file)
         val tmacHeader = inferenceEngine.readTmacHeader(file)
@@ -962,7 +1052,7 @@ class LeafyViewModel(
         if (!ggufHeader.isValidGguf && !pteHeader.isValidPte && !tmacHeader.isValidTmac && !isSupportedExtension) {
             fileManager.deleteModelFile(file.absolutePath)
             if (!silentInvalid) {
-                showTransientBanner("Invalid model file '$displayName': Not a valid .gguf, .pte, or .tmac binary.")
+                showTransientBanner("Invalid model file '$displayName': Not a valid .gguf, .pte, .tmac, or companion tokenizer file.")
             }
             return@withContext null
         }
@@ -1077,9 +1167,17 @@ class LeafyViewModel(
                         title = cursor.getString(nameIdx) ?: title
                     }
                 }
+                val maxChars = 24_000
                 val text = withContext(Dispatchers.IO) {
-                    appContext.contentResolver.openInputStream(uri)?.bufferedReader()?.use {
-                        it.readText().take(16000)
+                    appContext.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
+                        val sb = StringBuilder()
+                        val buf = CharArray(4096)
+                        var read = 0
+                        while (sb.length < maxChars && reader.read(buf).also { read = it } != -1) {
+                            val toAppend = minOf(read, maxChars - sb.length)
+                            sb.append(buf, 0, toAppend)
+                        }
+                        sb.toString()
                     } ?: ""
                 }
                 if (text.isNotBlank()) {
@@ -1128,11 +1226,24 @@ class LeafyViewModel(
         }
     }
 
+    fun deleteCustomPersona(persona: PersonaPresetEntity) {
+        if (persona.isBuiltIn) return
+        viewModelScope.launch {
+            val conv = uiState.value.activeConversation
+            if (conv != null && conv.activePersonaId == persona.id) {
+                repository.updateConversation(conv.copy(activePersonaId = 1L))
+            }
+            repository.deletePersona(persona.id)
+            showTransientBanner("Deleted custom persona '${persona.name}'")
+        }
+    }
+
     fun toggleSpeakMessage(messageId: Long, content: String) {
         voiceHelper.toggleSpeak(messageId, content)
     }
 
     fun wipeAllOfflineData() {
+        stopStreaming()
         viewModelScope.launch {
             repository.wipeAllHistory()
             val newId = repository.createConversation(
@@ -1141,7 +1252,7 @@ class LeafyViewModel(
                 runtimeId = uiState.value.activeRuntime.id,
                 personaId = 1L
             )
-            _activeConversationId.value = newId
+            setActiveConversationPref(newId)
             showTransientBanner("Local chat database wiped & reset to clean offline state.")
         }
     }
@@ -1177,6 +1288,14 @@ class LeafyViewModel(
     }
 
     companion object {
+        private const val PREFS_NAME = "leafy_studio_prefs"
+        private const val KEY_ACTIVE_CONV_ID = "active_conv_id"
+        private const val KEY_SELECTED_RUNTIME = "selected_runtime"
+        private const val KEY_SELECTED_MODEL_ID = "selected_model_id"
+        private const val KEY_POWER_PROFILE = "power_profile"
+        private const val KEY_USE_COMIC_SANS = "use_comic_sans"
+        private const val KEY_IS_DARK_THEME = "is_dark_theme"
+
         fun provideFactory(context: Context): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
