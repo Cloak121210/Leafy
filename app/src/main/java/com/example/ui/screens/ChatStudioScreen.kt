@@ -11,6 +11,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -117,11 +118,19 @@ fun ChatStudioScreen(
     }
 
     LaunchedEffect(uiState.streamingPreview?.partialText) {
-        if (uiState.streamingPreview != null) {
-            val totalItems = uiState.activeBranchMessages.size + 1
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            if (!listState.isScrollInProgress && lastVisible >= (totalItems - 2).coerceAtLeast(0)) {
-                listState.scrollToItem(totalItems - 1)
+        if (uiState.streamingPreview != null && !listState.isScrollInProgress) {
+            val layoutInfo = listState.layoutInfo
+            val totalItems = layoutInfo.totalItemsCount
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
+            if (lastVisible != null && totalItems > 0) {
+                if (lastVisible.index == totalItems - 1) {
+                    val bottomOverflow = (lastVisible.offset + lastVisible.size) - layoutInfo.viewportEndOffset
+                    if (bottomOverflow > 0) {
+                        listState.scrollBy(bottomOverflow.toFloat())
+                    }
+                } else if (lastVisible.index >= (totalItems - 2).coerceAtLeast(0)) {
+                    listState.scrollToItem(totalItems - 1)
+                }
             }
         }
     }

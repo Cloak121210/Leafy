@@ -1,8 +1,7 @@
 package com.example.engine
 
+import android.app.ActivityManager
 import android.content.Context
-import android.net.Uri
-import android.os.ParcelFileDescriptor
 import com.example.data.AiRuntime
 import com.example.data.LocalModelEntity
 import com.example.data.MessageNodeEntity
@@ -85,6 +84,7 @@ class LocalInferenceEngine(
     private val context: Context? = null
 ) {
     private val inferenceMutex = Mutex()
+    private val nativeHandleLock = Any()
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
@@ -119,20 +119,23 @@ class LocalInferenceEngine(
 
     /**
      * Halts active model generation across any active native engine.
+     * Synchronized with nativeHandleLock so stopCompletion()/stop() never races with native release()/close().
      */
     fun stopInference() {
         isCancelled = true
-        val directCtx = activeLlamaContext ?: mountedLlamaContext
-        if (directCtx != null) {
-            try {
-                directCtx.stopCompletion()
-            } catch (_: Throwable) {}
-        }
-        val execLlm = activeExecuTorchLlmModule
-        if (execLlm != null) {
-            try {
-                execLlm.stop()
-            } catch (_: Throwable) {}
+        synchronized(nativeHandleLock) {
+            val directCtx = activeLlamaContext ?: mountedLlamaContext
+            if (directCtx != null && directCtx.context != 0L) {
+                try {
+                    directCtx.stopCompletion()
+                } catch (_: Throwable) {}
+            }
+            val execLlm = activeExecuTorchLlmModule
+            if (execLlm != null) {
+                try {
+                    execLlm.stop()
+                } catch (_: Throwable) {}
+            }
         }
         val engine = activeLlamaEngine
         val ctxId = activeLlamaContextId
@@ -148,7 +151,7 @@ class LocalInferenceEngine(
     /**
      * Stops any ongoing generation and frees the mounted native context from RAM.
      * Called when switching models, switching to a non-GGUF runtime, or clearing the ViewModel.
-     * Guarded by inferenceMutex so native release() never races with an active completion call.
+     * Guarded by inferenceMutex and nativeHandleLock so native release() never races with an active completion call.
      */
     fun releaseMountedResources() {
         stopInference()
@@ -160,19 +163,29 @@ class LocalInferenceEngine(
     }
 
     private fun unmountLlamaContextLocked() {
-        val existing = mountedLlamaContext
-        mountedLlamaContext = null
-        mountedModelPath = null
-        mountedCtxSize = 0
-        mountedThreads = 0
-        mountedFallbackUsed = false
+        val existing: LlamaContext?
+        synchronized(nativeHandleLock) {
+            existing = mountedLlamaContext
+            mountedLlamaContext = null
+            if (activeLlamaContext === existing) {
+                activeLlamaContext = null
+            }
+            mountedModelPath = null
+            mountedCtxSize = 0
+            mountedThreads = 0
+            mountedFallbackUsed = false
+            if (existing != null && existing.context != 0L) {
+                try {
+                    existing.stopCompletion()
+                } catch (_: Throwable) {}
+            }
+        }
         if (existing != null) {
-            try {
-                existing.stopCompletion()
-            } catch (_: Throwable) {}
-            try {
-                existing.release()
-            } catch (_: Throwable) {}
+            synchronized(nativeHandleLock) {
+                try {
+                    existing.release()
+                } catch (_: Throwable) {}
+            }
         }
     }
 
@@ -305,10 +318,49 @@ class LocalInferenceEngine(
         }
     }.flowOn(Dispatchers.IO)
 
+    private data class DeviceMemoryAssessment(
+        val availMemMb: Long,
+        val totalMemMb: Long,
+        val isSystemLowMemory: Boolean,
+        val canAllocateOnHeap: Boolean,
+        val isCriticallyLowMemory: Boolean
+    )
+
+    private fun assessDeviceMemoryForModel(modelFile: File): DeviceMemoryAssessment {
+        val modelSizeMb = (modelFile.length() / (1024L * 1024L)).coerceAtLeast(1L)
+        val activityManager = context?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        if (activityManager == null) {
+            return DeviceMemoryAssessment(
+                availMemMb = 2048L,
+                totalMemMb = 4096L,
+                isSystemLowMemory = false,
+                canAllocateOnHeap = modelSizeMb <= 1024L,
+                isCriticallyLowMemory = false
+            )
+        }
+        val memInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memInfo)
+        val availMb = memInfo.availMem / (1024L * 1024L)
+        val totalMb = memInfo.totalMem / (1024L * 1024L)
+        val thresholdMb = memInfo.threshold / (1024L * 1024L)
+        // Require at least 384 MB headroom above OS low-memory threshold to allow non-mmap heap allocation
+        val canHeapLoad = !memInfo.lowMemory && availMb > (modelSizeMb + thresholdMb + 384L)
+        // Require at least 180 MB free above threshold (or 256 MB absolute) to mount KV cache + compute buffers
+        val criticallyLow = memInfo.lowMemory || availMb < maxOf(thresholdMb + 120L, 220L)
+        return DeviceMemoryAssessment(
+            availMemMb = availMb,
+            totalMemMb = totalMb,
+            isSystemLowMemory = memInfo.lowMemory,
+            canAllocateOnHeap = canHeapLoad,
+            isCriticallyLowMemory = criticallyLow
+        )
+    }
+
     /**
      * Returns an existing mounted LlamaContext if the model path and context/thread settings match,
-     * or mounts a fresh native LlamaContext using a detached file descriptor (`pfd.detachFd()`)
-     * so Android's Bionic fdsan never aborts when native C++ owns/closes the descriptor.
+     * or mounts a fresh native LlamaContext directly via canonical file path with mmap prioritized.
+     * Avoids raw detached file descriptors (`model_fd`) on standard files so Android's Bionic fdsan
+     * never aborts on double-close and file descriptors never leak across retry attempts.
      */
     private fun getOrMountNativeLlamaContextLocked(
         modelFile: File,
@@ -320,32 +372,35 @@ class LocalInferenceEngine(
         val primaryCtxSize = requestedCtx.coerceIn(512, 4096)
         val clampedThreads = requestedThreads.coerceIn(1, 8)
 
-        val existing = mountedLlamaContext
-        val expectedThreads = if (mountedFallbackUsed) clampedThreads.coerceAtMost(4) else clampedThreads
-        val ctxMatches = mountedCtxSize == primaryCtxSize || (mountedFallbackUsed && mountedCtxSize == 512)
-        if (existing != null &&
-            existing.context != 0L &&
-            mountedModelPath == canonicalPath &&
-            ctxMatches &&
-            mountedThreads == expectedThreads
-        ) {
-            return existing
+        synchronized(nativeHandleLock) {
+            val existing = mountedLlamaContext
+            val expectedThreads = if (mountedFallbackUsed) clampedThreads.coerceAtMost(4) else clampedThreads
+            val ctxMatches = mountedCtxSize == primaryCtxSize || (mountedFallbackUsed && mountedCtxSize == 512)
+            if (existing != null &&
+                existing.context != 0L &&
+                mountedModelPath == canonicalPath &&
+                ctxMatches &&
+                mountedThreads == expectedThreads
+            ) {
+                return existing
+            }
         }
 
         unmountLlamaContextLocked()
 
-        val modelUri = Uri.fromFile(modelFile)
-
-        fun openDetachedFd(): Int {
-            val pfd = try {
-                ParcelFileDescriptor.open(modelFile, ParcelFileDescriptor.MODE_READ_ONLY)
-            } catch (_: Exception) {
-                context?.contentResolver?.openFileDescriptor(modelUri, "r")
-            } ?: throw IllegalStateException("Could not open read descriptor for model file: ${modelFile.name}")
-            return pfd.detachFd()
+        val memAssessment = assessDeviceMemoryForModel(modelFile)
+        if (memAssessment.isCriticallyLowMemory) {
+            throw IllegalStateException(
+                "Insufficient free device RAM (${memAssessment.availMemMb} MB available) to safely mount '${modelFile.name}'. Close background apps or switch to Eco Battery Saver profile."
+            )
         }
 
-        val primaryBatch = minOf(preferredBatchSize, primaryCtxSize)
+        val effectivePrimaryCtx = if (memAssessment.availMemMb < 768L) {
+            primaryCtxSize.coerceAtMost(1024)
+        } else {
+            primaryCtxSize
+        }
+        val primaryBatch = minOf(preferredBatchSize, effectivePrimaryCtx)
 
         data class InitAttempt(
             val nCtx: Int,
@@ -355,46 +410,55 @@ class LocalInferenceEngine(
             val isFallback: Boolean
         )
 
-        // Note: Llamacpp-kotlin's LlamaHelper uses use_mmap = false as primary when passing detached model_fd
-        val attempts = listOf(
-            InitAttempt(
-                nCtx = primaryCtxSize,
-                nBatch = primaryBatch,
-                nThreads = clampedThreads,
-                useMmap = false,
-                isFallback = false
-            ),
-            InitAttempt(
-                nCtx = primaryCtxSize,
-                nBatch = primaryBatch,
-                nThreads = clampedThreads,
-                useMmap = true,
-                isFallback = false
-            ),
-            InitAttempt(
-                nCtx = 512,
-                nBatch = 256,
-                nThreads = clampedThreads.coerceAtMost(4),
-                useMmap = false,
-                isFallback = true
-            ),
-            InitAttempt(
-                nCtx = 512,
-                nBatch = 256,
-                nThreads = clampedThreads.coerceAtMost(4),
-                useMmap = true,
-                isFallback = true
+        // Prioritize useMmap = true so multi-hundred-MB / multi-GB GGUF weights are demand-paged
+        // from disk rather than allocated on the native heap (preventing lmkd SIGKILL / std::bad_alloc).
+        // Only fall back to useMmap = false when physical RAM is verified to have sufficient headroom.
+        val attempts = buildList {
+            add(
+                InitAttempt(
+                    nCtx = effectivePrimaryCtx,
+                    nBatch = primaryBatch,
+                    nThreads = clampedThreads,
+                    useMmap = true,
+                    isFallback = false
+                )
             )
-        )
+            add(
+                InitAttempt(
+                    nCtx = 512,
+                    nBatch = 256,
+                    nThreads = clampedThreads.coerceAtMost(4),
+                    useMmap = true,
+                    isFallback = true
+                )
+            )
+            if (memAssessment.canAllocateOnHeap) {
+                add(
+                    InitAttempt(
+                        nCtx = effectivePrimaryCtx,
+                        nBatch = primaryBatch,
+                        nThreads = clampedThreads,
+                        useMmap = false,
+                        isFallback = false
+                    )
+                )
+                add(
+                    InitAttempt(
+                        nCtx = 512,
+                        nBatch = 256,
+                        nThreads = clampedThreads.coerceAtMost(4),
+                        useMmap = false,
+                        isFallback = true
+                    )
+                )
+            }
+        }
 
         var lastError: Throwable? = null
         for (attempt in attempts) {
-            var detachedFd = -1
             try {
-                detachedFd = openDetachedFd()
                 val params = mapOf<String, Any>(
                     "model" to canonicalPath,
-                    "model_fd" to detachedFd,
                     "n_ctx" to attempt.nCtx,
                     "n_batch" to attempt.nBatch,
                     "n_threads" to attempt.nThreads,
@@ -411,19 +475,18 @@ class LocalInferenceEngine(
                 val ctxId = abs(Random.nextInt(1, Int.MAX_VALUE))
                 val llamaCtx = LlamaContext(ctxId, params)
                 if (llamaCtx.context != 0L) {
-                    mountedLlamaContext = llamaCtx
-                    mountedModelPath = canonicalPath
-                    mountedCtxSize = attempt.nCtx
-                    mountedThreads = attempt.nThreads
-                    mountedFallbackUsed = attempt.isFallback
+                    synchronized(nativeHandleLock) {
+                        mountedLlamaContext = llamaCtx
+                        mountedModelPath = canonicalPath
+                        mountedCtxSize = attempt.nCtx
+                        mountedThreads = attempt.nThreads
+                        mountedFallbackUsed = attempt.isFallback
+                    }
                     return llamaCtx
                 }
                 try { llamaCtx.release() } catch (_: Throwable) {}
             } catch (err: Throwable) {
                 lastError = err
-                if (detachedFd >= 0) {
-                    try { ParcelFileDescriptor.adoptFd(detachedFd).close() } catch (_: Throwable) {}
-                }
             }
         }
 
@@ -597,7 +660,9 @@ class LocalInferenceEngine(
                     requestedThreads = powerProfile.cpuThreads,
                     preferredBatchSize = 512
                 )
-                activeLlamaContext = llamaCtx
+                synchronized(nativeHandleLock) {
+                    activeLlamaContext = llamaCtx
+                }
                 val effectiveCtx = mountedCtxSize.takeIf { it > 0 } ?: targetCtx
                 val nPredict = computeGenerationTokenBudget(effectiveCtx)
 
@@ -707,9 +772,15 @@ class LocalInferenceEngine(
                 )
             } finally {
                 withContext(NonCancellable) {
-                    activeLlamaContext = null
-                    try { llamaCtx?.stopCompletion() } catch (_: Throwable) {}
+                    synchronized(nativeHandleLock) {
+                        if (llamaCtx != null && llamaCtx.context != 0L) {
+                            try { llamaCtx.stopCompletion() } catch (_: Throwable) {}
+                        }
+                    }
                     try { completionJob?.join() } catch (_: Throwable) {}
+                    synchronized(nativeHandleLock) {
+                        activeLlamaContext = null
+                    }
                     if (invalidateMountedOnError) {
                         unmountLlamaContextLocked()
                     }
@@ -778,7 +849,9 @@ class LocalInferenceEngine(
                     requestedThreads = powerProfile.cpuThreads,
                     preferredBatchSize = 256
                 )
-                activeLlamaContext = llamaCtx
+                synchronized(nativeHandleLock) {
+                    activeLlamaContext = llamaCtx
+                }
                 val effectiveCtx = mountedCtxSize.takeIf { it > 0 } ?: targetCtx
                 val nPredict = computeGenerationTokenBudget(effectiveCtx)
 
@@ -891,9 +964,15 @@ class LocalInferenceEngine(
                 )
             } finally {
                 withContext(NonCancellable) {
-                    activeLlamaContext = null
-                    try { llamaCtx?.stopCompletion() } catch (_: Throwable) {}
+                    synchronized(nativeHandleLock) {
+                        if (llamaCtx != null && llamaCtx.context != 0L) {
+                            try { llamaCtx.stopCompletion() } catch (_: Throwable) {}
+                        }
+                    }
                     try { completionJob?.join() } catch (_: Throwable) {}
+                    synchronized(nativeHandleLock) {
+                        activeLlamaContext = null
+                    }
                     if (invalidateMountedOnError) {
                         unmountLlamaContextLocked()
                     }
@@ -1013,13 +1092,23 @@ class LocalInferenceEngine(
 
                     val tokenChannel = Channel<String>(Channel.UNLIMITED)
 
-                    llmModule = LlmModule(
+                    val memAssessment = assessDeviceMemoryForModel(modelFile)
+                    if (memAssessment.isCriticallyLowMemory) {
+                        throw IllegalStateException(
+                            "Insufficient free device RAM (${memAssessment.availMemMb} MB available) to load ExecuTorch model '${modelFile.name}'. Close background apps or switch to Eco Battery Saver."
+                        )
+                    }
+
+                    val createdModule = LlmModule(
                         modelFile.absolutePath,
                         companionTokenizer.absolutePath,
                         persona.temperature
                     )
-                    activeExecuTorchLlmModule = llmModule
-                    llmModule.load()
+                    llmModule = createdModule
+                    synchronized(nativeHandleLock) {
+                        activeExecuTorchLlmModule = createdModule
+                    }
+                    createdModule.load()
 
                     genJob = engineScope.launch {
                         try {
@@ -1090,10 +1179,14 @@ class LocalInferenceEngine(
                     )
                 } finally {
                     withContext(NonCancellable) {
-                        activeExecuTorchLlmModule = null
-                        try { llmModule?.stop() } catch (_: Throwable) {}
+                        synchronized(nativeHandleLock) {
+                            try { llmModule?.stop() } catch (_: Throwable) {}
+                        }
                         try { genJob?.join() } catch (_: Throwable) {}
-                        try { llmModule?.close() } catch (_: Throwable) {}
+                        synchronized(nativeHandleLock) {
+                            activeExecuTorchLlmModule = null
+                            try { llmModule?.close() } catch (_: Throwable) {}
+                        }
                     }
                 }
                 return@withLock
@@ -1151,6 +1244,31 @@ class LocalInferenceEngine(
         }
     }
 
+    /**
+     * Verifies that a candidate companion tokenizer file for ExecuTorch LlmModule is a genuine
+     * non-empty binary tokenizer model (SentencePiece / Tiktoken `.bin` or `.model`) rather than
+     * a Hugging Face JSON/XML/HTML text file or GGUF weight file that would trigger a C++ ET_CHECK abort.
+     */
+    private fun isValidBinaryTokenizerFile(file: File): Boolean {
+        if (!file.exists() || !file.isFile || file.length() < 64L) return false
+        return try {
+            RandomAccessFile(file, "r").use { raf ->
+                val header = ByteArray(16)
+                val read = raf.read(header)
+                if (read < 4) return@use false
+                val magic4 = String(header, 0, 4, Charsets.US_ASCII)
+                if (magic4 == "GGUF") return@use false
+                val firstNonWs = header.take(read)
+                    .map { (it.toInt() and 0xFF).toChar() }
+                    .firstOrNull { !it.isWhitespace() }
+                // Reject JSON ('{', '[') or HTML/XML ('<') text files disguised as binary tokenizers
+                firstNonWs != '{' && firstNonWs != '[' && firstNonWs != '<'
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun findCompanionTokenizerFile(pteFile: File): File? {
         val searchDirs = mutableListOf<File>()
         pteFile.parentFile?.let { searchDirs.add(it) }
@@ -1160,30 +1278,22 @@ class LocalInferenceEngine(
             if (internalModels !in searchDirs) searchDirs.add(internalModels)
         }
 
+        // Only match model-specific or standard binary tokenizer filenames (.bin / .model)
         val candidates = listOf(
             "${pteFile.nameWithoutExtension}.tokenizer.bin",
             "${pteFile.nameWithoutExtension}.tokenizer.model",
-            "${pteFile.nameWithoutExtension}.tokenizer.json",
             "tokenizer.bin",
-            "tokenizer.model",
-            "tokenizer.json"
+            "tokenizer.model"
         )
 
         for (dir in searchDirs) {
             if (!dir.exists() || !dir.isDirectory) continue
             for (name in candidates) {
                 val f = File(dir, name)
-                if (f.exists() && f.isFile && f.length() > 0L) {
+                if (isValidBinaryTokenizerFile(f)) {
                     return f
                 }
             }
-            val matched = dir.listFiles()?.firstOrNull {
-                it.isFile && it.length() > 0L &&
-                    (it.name.endsWith("tokenizer.bin", ignoreCase = true) ||
-                        it.name.endsWith("tokenizer.model", ignoreCase = true) ||
-                        it.name.endsWith("tokenizer.json", ignoreCase = true))
-            }
-            if (matched != null) return matched
         }
         return null
     }
@@ -1244,7 +1354,9 @@ class LocalInferenceEngine(
                         requestedThreads = powerProfile.cpuThreads,
                         preferredBatchSize = 256
                     )
-                    activeLlamaContext = llamaCtx
+                    synchronized(nativeHandleLock) {
+                        activeLlamaContext = llamaCtx
+                    }
                     val effectiveCtx = mountedCtxSize.takeIf { it > 0 } ?: targetCtx
                     val nPredict = computeGenerationTokenBudget(effectiveCtx)
 
@@ -1355,9 +1467,15 @@ class LocalInferenceEngine(
                     )
                 } finally {
                     withContext(NonCancellable) {
-                        activeLlamaContext = null
-                        try { llamaCtx?.stopCompletion() } catch (_: Throwable) {}
+                        synchronized(nativeHandleLock) {
+                            if (llamaCtx != null && llamaCtx.context != 0L) {
+                                try { llamaCtx.stopCompletion() } catch (_: Throwable) {}
+                            }
+                        }
                         try { completionJob?.join() } catch (_: Throwable) {}
+                        synchronized(nativeHandleLock) {
+                            activeLlamaContext = null
+                        }
                         if (invalidateMountedOnError) {
                             unmountLlamaContextLocked()
                         }

@@ -33,9 +33,6 @@ interface LeafyDao {
     @Query("SELECT * FROM message_nodes WHERE conversationId = :conversationId ORDER BY timestamp ASC, id ASC")
     fun observeMessagesForConversation(conversationId: Long): Flow<List<MessageNodeEntity>>
 
-    @Query("SELECT * FROM message_nodes ORDER BY timestamp ASC")
-    fun observeAllMessages(): Flow<List<MessageNodeEntity>>
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessageNode(node: MessageNodeEntity): Long
 

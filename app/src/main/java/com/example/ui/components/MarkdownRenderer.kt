@@ -326,11 +326,13 @@ private fun CodeBlockCard(
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
                         .clickable {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                            val clip = ClipData.newPlainText("Leafy Code", code)
-                            clipboard?.setPrimaryClip(clip)
-                            copied = true
-                            Toast.makeText(context, "Code copied to clipboard", Toast.LENGTH_SHORT).show()
+                            try {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                val clip = ClipData.newPlainText("Leafy Code", code.take(64_000))
+                                clipboard?.setPrimaryClip(clip)
+                                copied = true
+                                Toast.makeText(context, "Code copied to clipboard", Toast.LENGTH_SHORT).show()
+                            } catch (_: Exception) {}
                         }
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -470,7 +472,7 @@ fun parseMarkdownBlocks(text: String): List<MarkdownBlock> {
         }
 
         // 7. Numbered lists (1. , 2. )
-        val numberedMatch = Regex("^(\\d+)\\.\\s+(.+)").find(trimmed)
+        val numberedMatch = NUMBERED_LIST_REGEX.find(trimmed)
         if (numberedMatch != null) {
             val num = numberedMatch.groupValues[1]
             val rest = numberedMatch.groupValues[2]
@@ -492,6 +494,8 @@ fun parseMarkdownBlocks(text: String): List<MarkdownBlock> {
 
     return blocks
 }
+
+private val NUMBERED_LIST_REGEX = Regex("^(\\d+)\\.\\s+(.+)")
 
 /**
  * Parses inline Markdown tags:

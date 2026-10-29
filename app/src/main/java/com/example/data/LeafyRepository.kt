@@ -7,7 +7,6 @@ import java.io.File
 class LeafyRepository(private val dao: LeafyDao) {
 
     val conversations: Flow<List<ConversationEntity>> = dao.observeConversations()
-    val allMessages: Flow<List<MessageNodeEntity>> = dao.observeAllMessages()
     val localModels: Flow<List<LocalModelEntity>> = dao.observeLocalModels()
     val ragDocuments: Flow<List<RagDocumentEntity>> = dao.observeRagDocuments()
     val personas: Flow<List<PersonaPresetEntity>> = dao.observePersonas()

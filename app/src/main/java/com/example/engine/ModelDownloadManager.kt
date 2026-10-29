@@ -55,13 +55,26 @@ class ModelDownloadManager(private val context: Context) {
         }
     }
 
+    private fun cleanupStaleImportingFiles() {
+        try {
+            val files = modelsDir.listFiles() ?: return
+            for (f in files) {
+                if (f.isFile && f.name.endsWith(".importing", ignoreCase = true)) {
+                    f.delete()
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
     /**
      * Loads a local model file from a user-selected Android Uri (content:// or file://)
      * into the app's local models directory so native C++ engines (llama.cpp, Bitnet.cpp,
      * ExecuTorch, T-MAC) can memory-map and read it via POSIX file paths.
      */
     fun importModelFromUri(uri: Uri): Flow<LocalModelLoadStatus> = flow {
+        var tempFile: File? = null
         try {
+            cleanupStaleImportingFiles()
             try {
                 context.contentResolver.takePersistableUriPermission(
                     uri,
@@ -122,7 +135,8 @@ class ModelDownloadManager(private val context: Context) {
 
             val safeFileName = displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
             val destinationFile = File(modelsDir, safeFileName)
-            val tempFile = File(modelsDir, "$safeFileName.importing")
+            val activeTempFile = File(modelsDir, "$safeFileName.importing")
+            tempFile = activeTempFile
 
             // If exact same file already exists in modelsDir with same byte size, reuse it
             if (destinationFile.exists() && totalBytes > 0L && destinationFile.length() == totalBytes) {
@@ -136,6 +150,27 @@ class ModelDownloadManager(private val context: Context) {
                         localFilePath = destinationFile.absolutePath,
                         sha256Short = sha,
                         isComplete = true
+                    )
+                )
+                return@flow
+            }
+
+            // Pre-flight disk space verification (require file size + 32 MB safety reserve)
+            val usableBytes = modelsDir.usableSpace
+            val existingReclaimableBytes = if (destinationFile.exists()) destinationFile.length() else 0L
+            val requiredBytes = totalBytes + (32L * 1024L * 1024L)
+            if (totalBytes > 0L && usableBytes > 0L && (usableBytes + existingReclaimableBytes) < requiredBytes) {
+                val neededMb = requiredBytes / (1024L * 1024L)
+                val freeMb = (usableBytes + existingReclaimableBytes) / (1024L * 1024L)
+                emit(
+                    LocalModelLoadStatus(
+                        displayName = displayName,
+                        progress = 0f,
+                        copiedBytes = 0L,
+                        totalBytes = totalBytes,
+                        localFilePath = "",
+                        isComplete = false,
+                        error = "Insufficient free device storage to import '$displayName' (requires $neededMb MB, only $freeMb MB free)."
                     )
                 )
                 return@flow
@@ -183,12 +218,12 @@ class ModelDownloadManager(private val context: Context) {
             var lastEmitTime = System.currentTimeMillis()
 
             inputStream.use { input ->
-                FileOutputStream(tempFile).use { output ->
+                FileOutputStream(activeTempFile).use { output ->
                     val buffer = ByteArray(256 * 1024)
                     var read: Int
                     while (input.read(buffer).also { read = it } != -1) {
                         if (!coroutineContext.isActive) {
-                            tempFile.delete()
+                            activeTempFile.delete()
                             return@flow
                         }
                         output.write(buffer, 0, read)
@@ -229,7 +264,7 @@ class ModelDownloadManager(private val context: Context) {
             } catch (_: Exception) {}
 
             if (copied <= 0L) {
-                tempFile.delete()
+                activeTempFile.delete()
                 emit(
                     LocalModelLoadStatus(
                         displayName = displayName,
@@ -247,10 +282,10 @@ class ModelDownloadManager(private val context: Context) {
             if (destinationFile.exists()) {
                 destinationFile.delete()
             }
-            val renamed = tempFile.renameTo(destinationFile)
-            if (!renamed && tempFile.exists()) {
-                tempFile.copyTo(destinationFile, overwrite = true)
-                tempFile.delete()
+            val renamed = activeTempFile.renameTo(destinationFile)
+            if (!renamed && activeTempFile.exists()) {
+                activeTempFile.copyTo(destinationFile, overwrite = true)
+                activeTempFile.delete()
             }
 
             digest.update(copied.toString().toByteArray(Charsets.UTF_8))
@@ -268,6 +303,9 @@ class ModelDownloadManager(private val context: Context) {
                 )
             )
         } catch (e: Exception) {
+            try {
+                tempFile?.delete()
+            } catch (_: Exception) {}
             emit(
                 LocalModelLoadStatus(
                     displayName = "Model Import",
@@ -301,6 +339,7 @@ class ModelDownloadManager(private val context: Context) {
      * for real .gguf, .pte, .tmac, .bitnet, or .bin model files on disk.
      */
     fun scanDiskForModelFiles(): List<File> {
+        cleanupStaleImportingFiles()
         val supportedExts = setOf("gguf", "pte", "tmac", "bitnet", "bin")
         val candidateDirs = mutableListOf<File>()
         candidateDirs.add(modelsDir)

@@ -155,7 +155,11 @@ fun LocalModelsScreen(
                     ) {
                         Button(
                             onClick = {
-                                openDocumentLauncher.launch(arrayOf("*/*"))
+                                try {
+                                    openDocumentLauncher.launch(arrayOf("*/*"))
+                                } catch (_: Exception) {
+                                    onScanDeviceModels()
+                                }
                             },
                             enabled = !uiState.isImportingModel,
                             modifier = Modifier

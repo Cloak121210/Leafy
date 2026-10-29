@@ -35,11 +35,13 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import java.io.File
 
@@ -155,10 +157,23 @@ class LeafyViewModel(
         }
     }
 
+    private val verifiedLocalModelsFlow = repository.localModels
+        .map { models ->
+            models.filter { model ->
+                if (!model.isInstalled || model.localFilePath.isBlank()) {
+                    false
+                } else {
+                    val file = File(model.localFilePath)
+                    file.exists() && file.length() > 0L
+                }
+            }
+        }
+        .flowOn(Dispatchers.IO)
+
     private val baseDataFlow = combine(
         repository.conversations,
         activeConversationMessagesFlow,
-        repository.localModels,
+        verifiedLocalModelsFlow,
         repository.ragDocuments,
         repository.personas
     ) { conversations, activeMessages, models, ragDocs, personas ->
@@ -241,9 +256,7 @@ class LeafyViewModel(
             activeLeafId = activeConv?.activeLeafMessageId
         )
 
-        val validLocalModels = models.filter {
-            it.isInstalled && it.localFilePath.isNotBlank() && File(it.localFilePath).exists() && File(it.localFilePath).length() > 0L
-        }
+        val validLocalModels = models
 
         val activeRuntime = explicitRuntime
             ?: activeConv?.activeRuntimeId?.takeIf { it.isNotBlank() }?.let { AiRuntime.fromId(it) }
@@ -587,8 +600,11 @@ class LeafyViewModel(
     fun switchModelAndRuntime(model: LocalModelEntity) {
         stopStreaming()
         viewModelScope.launch {
-            val file = File(model.localFilePath)
-            if (!model.isInstalled || model.localFilePath.isBlank() || !file.exists() || file.length() <= 0L) {
+            val fileExists = withContext(Dispatchers.IO) {
+                val file = File(model.localFilePath)
+                model.isInstalled && model.localFilePath.isNotBlank() && file.exists() && file.length() > 0L
+            }
+            if (!fileExists) {
                 repository.deleteLocalModel(model.id)
                 showTransientBanner("Model file '${model.name}' was not found on disk.")
                 return@launch
@@ -632,8 +648,15 @@ class LeafyViewModel(
                 inferenceEngine.releaseMountedResources()
             }
 
-            val allValidModels = repository.localModels.first().filter {
-                it.isInstalled && it.localFilePath.isNotBlank() && File(it.localFilePath).exists() && File(it.localFilePath).length() > 0L
+            val allValidModels = withContext(Dispatchers.IO) {
+                repository.localModels.first().filter {
+                    if (!it.isInstalled || it.localFilePath.isBlank()) {
+                        false
+                    } else {
+                        val f = File(it.localFilePath)
+                        f.exists() && f.length() > 0L
+                    }
+                }
             }
             val compatibleModels = allValidModels.filter { runtime.isCompatibleWithModel(it) }
             val currentModelId = _selectedModelId.value ?: uiState.value.activeModel?.id
@@ -675,8 +698,14 @@ class LeafyViewModel(
     }
 
     fun sendUserMessage(promptText: String) {
-        val cleanPrompt = promptText.trim()
-        if (cleanPrompt.isEmpty() || _streamingPreview.value != null) return
+        val rawTrimmed = promptText.trim()
+        if (rawTrimmed.isEmpty() || _streamingPreview.value != null) return
+        val cleanPrompt = if (rawTrimmed.length > MAX_PROMPT_CHARS) {
+            showTransientBanner("Prompt truncated to ${MAX_PROMPT_CHARS} characters to fit local database & context limits.")
+            rawTrimmed.take(MAX_PROMPT_CHARS)
+        } else {
+            rawTrimmed
+        }
 
         viewModelScope.launch {
             val state = uiState.value
@@ -690,8 +719,11 @@ class LeafyViewModel(
                 }
                 return@launch
             }
-            val modelFile = File(model.localFilePath)
-            if (!modelFile.exists() || modelFile.length() <= 0L) {
+            val modelFileValid = withContext(Dispatchers.IO) {
+                val modelFile = File(model.localFilePath)
+                modelFile.exists() && modelFile.length() > 0L
+            }
+            if (!modelFileValid) {
                 showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
                 repository.deleteLocalModel(model.id)
                 return@launch
@@ -759,8 +791,14 @@ class LeafyViewModel(
      * Edits a previous user message and forks a new conversation branch from its parent.
      */
     fun editUserMessageAndBranch(originalUserNode: MessageNodeEntity, editedPromptText: String) {
-        val cleanPrompt = editedPromptText.trim()
-        if (cleanPrompt.isEmpty() || _streamingPreview.value != null) return
+        val rawTrimmed = editedPromptText.trim()
+        if (rawTrimmed.isEmpty() || _streamingPreview.value != null) return
+        val cleanPrompt = if (rawTrimmed.length > MAX_PROMPT_CHARS) {
+            showTransientBanner("Edited prompt truncated to ${MAX_PROMPT_CHARS} characters.")
+            rawTrimmed.take(MAX_PROMPT_CHARS)
+        } else {
+            rawTrimmed
+        }
 
         viewModelScope.launch {
             val state = uiState.value
@@ -769,8 +807,11 @@ class LeafyViewModel(
                 showTransientBanner("No local AI model loaded. Please load a model file from the Local Models screen first.")
                 return@launch
             }
-            val modelFile = File(model.localFilePath)
-            if (!modelFile.exists() || modelFile.length() <= 0L) {
+            val modelFileValid = withContext(Dispatchers.IO) {
+                val modelFile = File(model.localFilePath)
+                modelFile.exists() && modelFile.length() > 0L
+            }
+            if (!modelFileValid) {
                 showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
                 repository.deleteLocalModel(model.id)
                 return@launch
@@ -836,8 +877,11 @@ class LeafyViewModel(
                 showTransientBanner("No local AI model loaded. Please load a model file from the Local Models screen first.")
                 return@launch
             }
-            val modelFile = File(model.localFilePath)
-            if (!modelFile.exists() || modelFile.length() <= 0L) {
+            val modelFileValid = withContext(Dispatchers.IO) {
+                val modelFile = File(model.localFilePath)
+                modelFile.exists() && modelFile.length() > 0L
+            }
+            if (!modelFileValid) {
                 showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
                 repository.deleteLocalModel(model.id)
                 return@launch
@@ -923,6 +967,9 @@ class LeafyViewModel(
             var wasCancelled = false
             var streamError: String? = null
 
+            var lastPreviewEmitMs = 0L
+            var lastPreviewPhase: InferenceTelemetryPhase? = null
+
             try {
                 inferenceEngine.streamResponse(
                     userPrompt = promptText,
@@ -957,25 +1004,35 @@ class LeafyViewModel(
                     }
                     finalCitations = step.citedRagSnippets.map { it.documentTitle }
 
-                    _streamingPreview.value = StreamingStepToPreview(
-                        parentNodeId = parentUserNodeId,
-                        stepText = step.accumulatedText,
-                        tps = step.currentTps,
-                        ttft = step.ttftMs,
-                        tokens = step.generatedTokens,
-                        energy = adjustedEnergy,
-                        citations = finalCitations,
-                        runtime = runtime,
-                        modelName = model.name,
-                        quantization = model.quantization,
-                        instantTps = step.instantTps,
-                        peakTps = finalPeakTps,
-                        interTokenLatencyMs = step.interTokenLatencyMs,
-                        prefillTps = finalPrefillTps,
-                        promptTokensEstimate = finalPromptTokens,
-                        phase = step.phase,
-                        tpsSeries = finalTpsSeries
-                    )
+                    val nowMs = SystemClock.elapsedRealtime()
+                    val shouldEmitPreview = step.isFinished ||
+                        step.generatedTokens <= 1 ||
+                        step.phase != lastPreviewPhase ||
+                        (nowMs - lastPreviewEmitMs) >= STREAM_PREVIEW_MIN_INTERVAL_MS
+
+                    if (shouldEmitPreview) {
+                        lastPreviewEmitMs = nowMs
+                        lastPreviewPhase = step.phase
+                        _streamingPreview.value = StreamingStepToPreview(
+                            parentNodeId = parentUserNodeId,
+                            stepText = step.accumulatedText,
+                            tps = step.currentTps,
+                            ttft = step.ttftMs,
+                            tokens = step.generatedTokens,
+                            energy = adjustedEnergy,
+                            citations = finalCitations,
+                            runtime = runtime,
+                            modelName = model.name,
+                            quantization = model.quantization,
+                            instantTps = step.instantTps,
+                            peakTps = finalPeakTps,
+                            interTokenLatencyMs = step.interTokenLatencyMs,
+                            prefillTps = finalPrefillTps,
+                            promptTokensEstimate = finalPromptTokens,
+                            phase = step.phase,
+                            tpsSeries = finalTpsSeries
+                        )
+                    }
                 }
             } catch (ce: CancellationException) {
                 wasCancelled = true
@@ -1039,9 +1096,9 @@ class LeafyViewModel(
 
                     val contentToPersist = when {
                         finalStepText.isNotBlank() && wasCancelled ->
-                            "${finalStepText.trimEnd()}\n\n_[Generation stopped by user]_"
+                            "${finalStepText.trimEnd().take(MAX_ASSISTANT_REPLY_CHARS)}\n\n_[Generation stopped by user]_"
                         finalStepText.isNotBlank() ->
-                            finalStepText
+                            finalStepText.take(MAX_ASSISTANT_REPLY_CHARS)
                         streamError != null ->
                             "**[Local Inference Error]** Could not complete generation on `${runtime.displayName}`: $streamError"
                         else -> ""
@@ -1350,21 +1407,27 @@ class LeafyViewModel(
     }
 
     fun addRagDocument(title: String, category: String, content: String) {
-        if (title.isBlank() || content.isBlank()) return
+        val trimmedTitle = title.trim().take(MAX_RAG_TITLE_CHARS)
+        val rawContent = content.trim()
+        if (trimmedTitle.isBlank() || rawContent.isBlank()) return
+        val wasTruncated = rawContent.length > MAX_RAG_CONTENT_CHARS
+        val boundedContent = rawContent.take(MAX_RAG_CONTENT_CHARS)
+
         viewModelScope.launch {
-            val paragraphs = content.split(Regex("\\n\\s*\\n")).filter { it.isNotBlank() }.size.coerceAtLeast(1)
-            val tokens = (content.split(Regex("\\s+")).size * 1.3f).toInt().coerceAtLeast(1)
+            val paragraphs = boundedContent.split(Regex("\\n\\s*\\n")).filter { it.isNotBlank() }.size.coerceAtLeast(1)
+            val tokens = (boundedContent.split(Regex("\\s+")).size * 1.3f).toInt().coerceAtLeast(1)
             repository.insertRagDocument(
                 RagDocumentEntity(
-                    title = title.trim(),
-                    category = category.ifBlank { "Local Note" },
-                    content = content.trim(),
+                    title = trimmedTitle,
+                    category = category.trim().ifBlank { "Local Note" }.take(64),
+                    content = boundedContent,
                     chunkCount = paragraphs,
                     tokenEstimate = tokens,
                     isPinnedToChat = true
                 )
             )
-            showTransientBanner("Indexed '${title.trim()}' ($paragraphs chunks, ~$tokens tokens) locally.")
+            val truncNotice = if (wasTruncated) " (capped at ${MAX_RAG_CONTENT_CHARS} chars)" else ""
+            showTransientBanner("Indexed '$trimmedTitle'$truncNotice ($paragraphs chunks, ~$tokens tokens) locally.")
         }
     }
 
@@ -1417,14 +1480,16 @@ class LeafyViewModel(
         temperature: Float,
         topP: Float
     ) {
-        if (name.isBlank() || systemPrompt.isBlank()) return
+        val cleanName = name.trim().take(80)
+        val cleanSystemPrompt = systemPrompt.trim().take(MAX_PERSONA_PROMPT_CHARS)
+        if (cleanName.isBlank() || cleanSystemPrompt.isBlank()) return
         viewModelScope.launch {
             val id = repository.insertPersona(
                 PersonaPresetEntity(
-                    name = name.trim(),
+                    name = cleanName,
                     iconTag = "psychology",
-                    tagline = tagline.ifBlank { "Custom local persona" },
-                    systemPrompt = systemPrompt.trim(),
+                    tagline = tagline.trim().ifBlank { "Custom local persona" }.take(120),
+                    systemPrompt = cleanSystemPrompt,
                     temperature = temperature,
                     topP = topP,
                     isBuiltIn = false
@@ -1434,7 +1499,7 @@ class LeafyViewModel(
             if (conv != null) {
                 repository.updateConversation(conv.copy(activePersonaId = id))
             }
-            showTransientBanner("Saved & activated persona '${name.trim()}'")
+            showTransientBanner("Saved & activated persona '$cleanName'")
         }
     }
 
@@ -1475,11 +1540,14 @@ class LeafyViewModel(
     fun refreshTelemetry() {
         val profile = _powerProfile.value
         val isGen = _streamingPreview.value != null
-        _telemetry.value = telemetryManager.sampleTelemetry(
-            activeProfileMilliwatts = profile.estimatedMilliwatts,
-            isGenerating = isGen,
-            totalSessionTokens = _totalSessionTokens.value
-        )
+        val sessionToks = _totalSessionTokens.value
+        viewModelScope.launch(Dispatchers.IO) {
+            _telemetry.value = telemetryManager.sampleTelemetry(
+                activeProfileMilliwatts = profile.estimatedMilliwatts,
+                isGenerating = isGen,
+                totalSessionTokens = sessionToks
+            )
+        }
     }
 
     fun dismissBanner() {
@@ -1510,6 +1578,12 @@ class LeafyViewModel(
         private const val KEY_POWER_PROFILE = "power_profile"
         private const val KEY_USE_COMIC_SANS = "use_comic_sans"
         private const val KEY_IS_DARK_THEME = "is_dark_theme"
+        private const val MAX_PROMPT_CHARS = 16_000
+        private const val MAX_ASSISTANT_REPLY_CHARS = 32_000
+        private const val MAX_RAG_CONTENT_CHARS = 24_000
+        private const val MAX_RAG_TITLE_CHARS = 160
+        private const val MAX_PERSONA_PROMPT_CHARS = 4_000
+        private const val STREAM_PREVIEW_MIN_INTERVAL_MS = 32L
 
         fun provideFactory(context: Context): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
