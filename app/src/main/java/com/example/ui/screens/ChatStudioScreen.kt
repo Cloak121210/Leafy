@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EnergySavingsLeaf
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -75,6 +78,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.data.AiRuntime
 import com.example.data.MessageNodeEntity
+import com.example.engine.InferenceTelemetryPhase
+import com.example.ui.components.LiveTpsSparklineCanvas
 import com.example.ui.components.MarkdownText
 import com.example.ui.components.runtimeAccentColor
 import com.example.ui.theme.JetBrainsMonoFontFamily
@@ -150,7 +155,7 @@ fun ChatStudioScreen(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Status bar showing active runtime, persona, pinned RAG count & battery telemetry
+        // Status bar showing active runtime, live TPS readout, persona, pinned RAG count & battery telemetry
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -177,8 +182,17 @@ fun ChatStudioScreen(
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(13.dp)
                     )
+                    val tpsSuffix = when {
+                        uiState.streamingPreview != null && uiState.streamingPreview.phase == InferenceTelemetryPhase.PREFILLING ->
+                            " • PREFILL (${uiState.streamingPreview.ttftMs}ms)"
+                        uiState.streamingPreview != null ->
+                            " • ${"%.1f".format(uiState.streamingPreview.instantTps)} t/s"
+                        uiState.tpsTelemetry.decodeTps > 0f ->
+                            " • ${"%.1f".format(uiState.tpsTelemetry.decodeTps)} t/s"
+                        else -> ""
+                    }
                     Text(
-                        text = "${uiState.activeRuntime.displayName} • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG pinned • ${uiState.telemetry.batteryPercent}%",
+                        text = "${uiState.activeRuntime.displayName}$tpsSuffix • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG pinned • ${uiState.telemetry.batteryPercent}%",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -639,6 +653,8 @@ private fun BranchedMessageBubble(
                 )
 
                 AnimatedVisibility(visible = !isUser && showTelemetryAndRagDetails) {
+                    val itlMs = if (node.tokensPerSec > 0f) 1000f / node.tokensPerSec else 0f
+                    val uWhPerTok = if (node.tokenCount > 0) node.energyMicroWh / node.tokenCount else 0f
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerLow
@@ -647,7 +663,7 @@ private fun BranchedMessageBubble(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Text(
                                 text = "Engine: ${runtime.displayName} (${node.quantization}) • Model: ${node.modelName}",
@@ -658,7 +674,14 @@ private fun BranchedMessageBubble(
                                 color = runtimeAccentColor(runtime)
                             )
                             Text(
-                                text = "Speed: ${"%.1f".format(node.tokensPerSec)} t/s • TTFT: ${node.ttftMs} ms • Energy: ${"%.0f".format(node.energyMicroWh)} µWh",
+                                text = "Decode: ${"%.1f".format(node.tokensPerSec)} t/s • ITL: ${"%.1f".format(itlMs)} ms/tok • TTFT: ${node.ttftMs} ms",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = JetBrainsMonoFontFamily
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Tokens: ${node.tokenCount} tok • Energy: ${"%.1f".format(node.energyMicroWh)} µWh (${"%.2f".format(uWhPerTok)} µWh/tok) • Mode: ${node.powerProfileId}",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
@@ -734,7 +757,8 @@ private fun BranchedMessageBubble(
                                     .background(runtimeAccentColor(runtime))
                             )
                             Text(
-                                text = "${runtime.displayName} • ${"%.1f".format(node.tokensPerSec)} t/s",
+                                text = "${runtime.displayName} • ${"%.1f".format(node.tokensPerSec)} t/s" +
+                                    if (node.tokenCount > 0) " • ${node.tokenCount} tok" else "",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
@@ -831,18 +855,24 @@ private fun StreamingAssistantCard(
     preview: StreamingPreviewState,
     onStop: () -> Unit
 ) {
+    val accent = runtimeAccentColor(preview.runtime)
+    val isPrefilling = preview.phase == InferenceTelemetryPhase.PREFILLING
+
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("live_streaming_telemetry_card"),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
         ),
-        border = BorderStroke(1.5.dp, runtimeAccentColor(preview.runtime))
+        border = BorderStroke(1.5.dp, accent)
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Top Header: Runtime, Phase Pill, Live Instant/Decode TPS & Stop Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -850,25 +880,55 @@ private fun StreamingAssistantCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.EnergySavingsLeaf,
-                        contentDescription = null,
-                        tint = runtimeAccentColor(preview.runtime),
-                        modifier = Modifier.size(15.dp)
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = accent.copy(alpha = 0.16f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isPrefilling) Icons.Default.Bolt else Icons.Default.Speed,
+                                contentDescription = null,
+                                tint = accent,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = if (isPrefilling) "PREFILL" else "LIVE TPS",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = JetBrainsMonoFontFamily,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = accent
+                            )
+                        }
+                    }
+
                     Text(
-                        text = "${preview.runtime.displayName} • ${"%.1f".format(preview.liveTps)} t/s",
+                        text = if (isPrefilling) {
+                            "${preview.runtime.displayName} • ~${preview.promptTokensEstimate} prompt tok"
+                        } else {
+                            "${preview.runtime.displayName} • ${"%.1f".format(preview.instantTps)} t/s (Avg ${"%.1f".format(preview.liveTps)} • Peak ${"%.1f".format(preview.peakTps)})"
+                        },
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontFamily = JetBrainsMonoFontFamily,
                             fontWeight = FontWeight.Bold
                         ),
-                        color = runtimeAccentColor(preview.runtime)
+                        color = accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                TextButton(onClick = onStop) {
+                TextButton(
+                    onClick = onStop,
+                    modifier = Modifier.testTag("stop_streaming_button")
+                ) {
                     Icon(
                         imageVector = Icons.Default.Stop,
                         contentDescription = "Stop generation",
@@ -879,10 +939,70 @@ private fun StreamingAssistantCard(
                 }
             }
 
-            MarkdownText(
-                markdown = preview.partialText,
-                isUser = false
-            )
+            // Live Telemetry HUD Strip + Sparkline Waveform
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "TTFT: ${preview.ttftMs} ms",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "ITL: ${"%.1f".format(preview.interTokenLatencyMs)} ms/tok",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Out: ${preview.generatedTokens} tok",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "${"%.1f".format(preview.energyMicroWh)} µWh",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    if (preview.tpsSeries.isNotEmpty()) {
+                        LiveTpsSparklineCanvas(
+                            tpsSeries = preview.tpsSeries,
+                            accentColor = accent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(34.dp)
+                                .testTag("live_tps_sparkline_canvas")
+                        )
+                    }
+                }
+            }
+
+            if (preview.partialText.isBlank() && isPrefilling) {
+                Text(
+                    text = "Evaluating prompt context (~${preview.promptTokensEstimate} tokens) into ${preview.runtime.displayName} (${preview.quantization}) KV cache…",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                MarkdownText(
+                    markdown = preview.partialText,
+                    isUser = false
+                )
+            }
         }
     }
 }

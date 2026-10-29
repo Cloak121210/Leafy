@@ -45,6 +45,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.PowerProfile
+import com.example.engine.InferenceTelemetryPhase
+import com.example.ui.components.LiveTpsSparklineCanvas
 import com.example.ui.components.powerProfileAccentColor
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.viewmodel.LeafyUiState
@@ -59,6 +61,7 @@ fun EcoAndSettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val telemetry = uiState.telemetry
+    val tpsTelemetry = uiState.tpsTelemetry
 
     LazyColumn(
         modifier = modifier
@@ -67,6 +70,159 @@ fun EcoAndSettingsScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // 0. Live TPS & Inference Performance Telemetry Card
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("live_tps_telemetry_card"),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                ),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Speed,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Live TPS & Inference Telemetry",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        val statusBadgeText = when (tpsTelemetry.phase) {
+                            InferenceTelemetryPhase.PREFILLING -> "PREFILLING"
+                            InferenceTelemetryPhase.DECODING -> "LIVE STREAM"
+                            InferenceTelemetryPhase.MOUNTING -> "MOUNTING"
+                            InferenceTelemetryPhase.COMPLETED -> "MEASURED"
+                            InferenceTelemetryPhase.IDLE -> "STANDBY"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                        ) {
+                            Text(
+                                text = statusBadgeText,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = JetBrainsMonoFontFamily,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    val primaryTps = when {
+                        tpsTelemetry.instantTps > 0f -> tpsTelemetry.instantTps
+                        tpsTelemetry.decodeTps > 0f -> tpsTelemetry.decodeTps
+                        else -> tpsTelemetry.sessionAverageTps
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        TelemetryMetricBox(
+                            title = "Decode Velocity",
+                            value = if (primaryTps > 0f) "${"%.1f".format(primaryTps)} tok/s" else "0.0 tok/s",
+                            subtitle = "Peak ${"%.1f".format(tpsTelemetry.sessionPeakTps)} • Avg ${"%.1f".format(tpsTelemetry.sessionAverageTps)} t/s",
+                            modifier = Modifier.weight(1f)
+                        )
+                        TelemetryMetricBox(
+                            title = "Latency & TTFT",
+                            value = if (tpsTelemetry.interTokenLatencyMs > 0f) {
+                                "${"%.1f".format(tpsTelemetry.interTokenLatencyMs)} ms/tok"
+                            } else {
+                                "— ms/tok"
+                            },
+                            subtitle = "TTFT: ${tpsTelemetry.lastTtftMs} ms (Avg ${tpsTelemetry.averageTtftMs} ms)",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        TelemetryMetricBox(
+                            title = "Prefill & Volume",
+                            value = if (tpsTelemetry.prefillTps > 0f) {
+                                "${"%.1f".format(tpsTelemetry.prefillTps)} tok/s"
+                            } else {
+                                "${tpsTelemetry.totalSessionTokens} tokens"
+                            },
+                            subtitle = "${tpsTelemetry.promptTokensEstimate} prompt • ${tpsTelemetry.totalSessionTokens} session tok",
+                            modifier = Modifier.weight(1f)
+                        )
+                        TelemetryMetricBox(
+                            title = "Token Efficiency",
+                            value = if (tpsTelemetry.energyPerTokenMicroWh > 0f) {
+                                "${"%.1f".format(tpsTelemetry.energyPerTokenMicroWh)} µWh/tok"
+                            } else {
+                                "${tpsTelemetry.energyMicroWh} µWh"
+                            },
+                            subtitle = "${"%.0f".format(tpsTelemetry.tokensPerMilliwattHour)} tok/mWh • ${tpsTelemetry.completedRunsCount} runs",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    if (tpsTelemetry.tpsHistory.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Live Token Velocity Waveform",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "Max ${"%.1f".format((tpsTelemetry.tpsHistory.maxOrNull() ?: 0f).coerceAtLeast(tpsTelemetry.sessionPeakTps))} tok/s",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFontFamily
+                                    ),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            LiveTpsSparklineCanvas(
+                                tpsSeries = tpsTelemetry.tpsHistory,
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // 1. Live Battery, Thermal & Carbon Telemetry Dashboard
         item {
             Card(

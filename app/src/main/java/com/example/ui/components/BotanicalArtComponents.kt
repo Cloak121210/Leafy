@@ -504,3 +504,111 @@ fun LeafyCleanTopBar(
         }
     }
 }
+
+/**
+ * Real-time Canvas sparkline waveform visualizing live and historical TPS throughput.
+ */
+@Composable
+fun LiveTpsSparklineCanvas(
+    tpsSeries: List<Float>,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        if (w <= 0f || h <= 0f) return@Canvas
+
+        // Reference horizontal guide lines (25%, 50%, 75%)
+        listOf(0.25f, 0.5f, 0.75f).forEach { ratio ->
+            val y = h * ratio
+            drawLine(
+                color = gridColor,
+                start = Offset(0f, y),
+                end = Offset(w, y),
+                strokeWidth = 1.dp.toPx()
+            )
+        }
+
+        val cleanPoints = tpsSeries.filter { it.isFinite() && it >= 0f }
+        if (cleanPoints.isEmpty()) {
+            val midY = h * 0.65f
+            drawLine(
+                color = accentColor.copy(alpha = 0.35f),
+                start = Offset(0f, midY),
+                end = Offset(w, midY),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+            return@Canvas
+        }
+
+        val displayPoints = if (cleanPoints.size == 1) {
+            listOf(cleanPoints.first(), cleanPoints.first())
+        } else {
+            cleanPoints
+        }
+
+        val maxVal = (displayPoints.maxOrNull() ?: 10f).coerceAtLeast(5f) * 1.15f
+        val minVal = 0f
+        val range = (maxVal - minVal).coerceAtLeast(1f)
+        val verticalPad = h * 0.12f
+        val usableH = (h - verticalPad * 2f).coerceAtLeast(1f)
+
+        val coordinates = displayPoints.mapIndexed { idx, value ->
+            val x = (idx.toFloat() / (displayPoints.size - 1).coerceAtLeast(1)) * w
+            val normalized = ((value - minVal) / range).coerceIn(0f, 1f)
+            val y = (h - verticalPad) - (normalized * usableH)
+            Offset(x, y)
+        }
+
+        val strokePath = Path().apply {
+            moveTo(coordinates.first().x, coordinates.first().y)
+            for (i in 1 until coordinates.size) {
+                val prev = coordinates[i - 1]
+                val curr = coordinates[i]
+                val controlX = (prev.x + curr.x) / 2f
+                cubicTo(controlX, prev.y, controlX, curr.y, curr.x, curr.y)
+            }
+        }
+
+        val fillPath = Path().apply {
+            addPath(strokePath)
+            lineTo(coordinates.last().x, h)
+            lineTo(coordinates.first().x, h)
+            close()
+        }
+
+        drawPath(
+            path = fillPath,
+            brush = Brush.verticalGradient(
+                colors = listOf(
+                    accentColor.copy(alpha = 0.30f),
+                    accentColor.copy(alpha = 0.02f)
+                ),
+                startY = 0f,
+                endY = h
+            )
+        )
+
+        drawPath(
+            path = strokePath,
+            color = accentColor,
+            style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
+        )
+
+        val lastPt = coordinates.last()
+        drawCircle(
+            color = accentColor.copy(alpha = 0.28f),
+            radius = 6.dp.toPx(),
+            center = lastPt
+        )
+        drawCircle(
+            color = accentColor,
+            radius = 3.2.dp.toPx(),
+            center = lastPt
+        )
+    }
+}
+

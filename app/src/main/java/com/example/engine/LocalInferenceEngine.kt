@@ -49,7 +49,14 @@ data class StreamingStep(
     val generatedTokens: Int,
     val energyMicroWh: Float,
     val citedRagSnippets: List<RetrievedRagSnippet>,
-    val isFinished: Boolean
+    val isFinished: Boolean,
+    val instantTps: Float = currentTps,
+    val peakTps: Float = currentTps,
+    val interTokenLatencyMs: Float = if (currentTps > 0f) 1000f / currentTps else 0f,
+    val prefillTps: Float = 0f,
+    val promptTokensEstimate: Int = 0,
+    val phase: InferenceTelemetryPhase = if (isFinished) InferenceTelemetryPhase.COMPLETED else InferenceTelemetryPhase.DECODING,
+    val tpsSeries: List<Float> = emptyList()
 )
 
 data class GgufHeaderInfo(
@@ -604,6 +611,13 @@ class LocalInferenceEngine(
                     effectiveCtxSize = effectiveCtx
                 )
 
+                val promptTokenEstimate = LiveTpsTelemetryTracker.estimatePromptTokens(effectivePrompt)
+                val tpsTracker = LiveTpsTelemetryTracker(
+                    promptTokensEstimate = promptTokenEstimate,
+                    estimatedMilliwatts = powerProfile.estimatedMilliwatts.toFloat()
+                )
+                emit(tpsTracker.buildPrefillStep(retrievedRag, InferenceTelemetryPhase.PREFILLING))
+
                 val tokenChannel = Channel<String>(Channel.UNLIMITED)
                 llamaCtx.setTokenCallback { partialToken ->
                     if (!isCancelled) {
@@ -622,11 +636,11 @@ class LocalInferenceEngine(
                     "stop" to STOP_SEQUENCES
                 )
 
-                var finalCompletionText: String? = null
+                var nativeMetrics = NativeCompletionMetrics(null, null, null, null)
                 completionJob = engineScope.launch {
                     try {
                         val result = llamaCtx.completion(completionParams)
-                        finalCompletionText = result["text"] as? String
+                        nativeMetrics = extractNativeCompletionMetrics(result)
                     } catch (e: Throwable) {
                         invalidateMountedOnError = true
                         if (!isCancelled) {
@@ -639,54 +653,29 @@ class LocalInferenceEngine(
 
                 val accumulated = StringBuilder()
                 var tokenCount = 0
-                val startTimeMs = System.currentTimeMillis()
-                var firstTokenTimeMs = 0L
 
                 for (token in tokenChannel) {
-                    val now = System.currentTimeMillis()
-                    if (tokenCount == 0) firstTokenTimeMs = now
                     tokenCount++
                     accumulated.append(token)
-
-                    val elapsedSec = (now - startTimeMs) / 1000f
-                    val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
-                    val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-                    val liveEnergy = (elapsedSec * powerProfile.estimatedMilliwatts) / 3.6f
-
-                    emit(
-                        StreamingStep(
-                            accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
-                            currentTps = liveTps,
-                            ttftMs = ttftMs,
-                            generatedTokens = tokenCount,
-                            energyMicroWh = liveEnergy,
-                            citedRagSnippets = retrievedRag,
-                            isFinished = false
-                        )
-                    )
+                    val cleanText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES)
+                    emit(tpsTracker.onTokenReceived(cleanText, retrievedRag))
                 }
 
                 completionJob.join()
 
-                if (accumulated.isEmpty() && !finalCompletionText.isNullOrBlank()) {
-                    accumulated.append(finalCompletionText)
-                    tokenCount = finalCompletionText!!.split(Regex("\\s+")).size.coerceAtLeast(1)
+                if (accumulated.isEmpty() && !nativeMetrics.text.isNullOrBlank()) {
+                    accumulated.append(nativeMetrics.text)
+                    tokenCount = nativeMetrics.predictedTokensCount
+                        ?: nativeMetrics.text!!.split(Regex("\\s+")).size.coerceAtLeast(1)
                 }
 
-                val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
-                val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
-                val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else (totalSec * 1000f).toInt()
-                val finalEnergy = (totalSec * powerProfile.estimatedMilliwatts) / 3.6f
-
                 emit(
-                    StreamingStep(
-                        accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
-                        currentTps = finalTps,
-                        ttftMs = finalTtft,
-                        generatedTokens = tokenCount,
-                        energyMicroWh = finalEnergy,
+                    tpsTracker.buildFinalStep(
+                        cleanAccumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
                         citedRagSnippets = retrievedRag,
-                        isFinished = true
+                        fallbackTokenCount = tokenCount,
+                        nativeDecodeTpsOverride = nativeMetrics.nativeDecodeTps,
+                        nativePrefillTpsOverride = nativeMetrics.nativePrefillTps
                     )
                 )
             } catch (e: UnsatisfiedLinkError) {
@@ -803,6 +792,14 @@ class LocalInferenceEngine(
                     effectiveCtxSize = effectiveCtx
                 )
 
+                val bitnetMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
+                val promptTokenEstimate = LiveTpsTelemetryTracker.estimatePromptTokens(effectivePrompt)
+                val tpsTracker = LiveTpsTelemetryTracker(
+                    promptTokensEstimate = promptTokenEstimate,
+                    estimatedMilliwatts = bitnetMilliwatts
+                )
+                emit(tpsTracker.buildPrefillStep(retrievedRag, InferenceTelemetryPhase.PREFILLING))
+
                 val tokenChannel = Channel<String>(Channel.UNLIMITED)
                 llamaCtx.setTokenCallback { partialToken ->
                     if (!isCancelled) {
@@ -823,11 +820,11 @@ class LocalInferenceEngine(
                     "stop" to STOP_SEQUENCES
                 )
 
-                var finalCompletionText: String? = null
+                var nativeMetrics = NativeCompletionMetrics(null, null, null, null)
                 completionJob = engineScope.launch {
                     try {
                         val result = llamaCtx.completion(completionParams)
-                        finalCompletionText = result["text"] as? String
+                        nativeMetrics = extractNativeCompletionMetrics(result)
                     } catch (e: Throwable) {
                         invalidateMountedOnError = true
                         if (!isCancelled) {
@@ -840,56 +837,29 @@ class LocalInferenceEngine(
 
                 val accumulated = StringBuilder()
                 var tokenCount = 0
-                val startTimeMs = System.currentTimeMillis()
-                var firstTokenTimeMs = 0L
 
                 for (token in tokenChannel) {
-                    val now = System.currentTimeMillis()
-                    if (tokenCount == 0) firstTokenTimeMs = now
                     tokenCount++
                     accumulated.append(token)
-
-                    val elapsedSec = (now - startTimeMs) / 1000f
-                    val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
-                    val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-                    val bitnetMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
-                    val liveEnergy = (elapsedSec * bitnetMilliwatts) / 3.6f
-
-                    emit(
-                        StreamingStep(
-                            accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
-                            currentTps = liveTps,
-                            ttftMs = ttftMs,
-                            generatedTokens = tokenCount,
-                            energyMicroWh = liveEnergy,
-                            citedRagSnippets = retrievedRag,
-                            isFinished = false
-                        )
-                    )
+                    val cleanText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES)
+                    emit(tpsTracker.onTokenReceived(cleanText, retrievedRag))
                 }
 
                 completionJob.join()
 
-                if (accumulated.isEmpty() && !finalCompletionText.isNullOrBlank()) {
-                    accumulated.append(finalCompletionText)
-                    tokenCount = finalCompletionText!!.split(Regex("\\s+")).size.coerceAtLeast(1)
+                if (accumulated.isEmpty() && !nativeMetrics.text.isNullOrBlank()) {
+                    accumulated.append(nativeMetrics.text)
+                    tokenCount = nativeMetrics.predictedTokensCount
+                        ?: nativeMetrics.text!!.split(Regex("\\s+")).size.coerceAtLeast(1)
                 }
 
-                val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
-                val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
-                val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else (totalSec * 1000f).toInt()
-                val bitnetMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
-                val finalEnergy = (totalSec * bitnetMilliwatts) / 3.6f
-
                 emit(
-                    StreamingStep(
-                        accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
-                        currentTps = finalTps,
-                        ttftMs = finalTtft,
-                        generatedTokens = tokenCount,
-                        energyMicroWh = finalEnergy,
+                    tpsTracker.buildFinalStep(
+                        cleanAccumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
                         citedRagSnippets = retrievedRag,
-                        isFinished = true
+                        fallbackTokenCount = tokenCount,
+                        nativeDecodeTpsOverride = nativeMetrics.nativeDecodeTps,
+                        nativePrefillTpsOverride = nativeMetrics.nativePrefillTps
                     )
                 )
             } catch (e: UnsatisfiedLinkError) {
@@ -930,6 +900,33 @@ class LocalInferenceEngine(
                 }
             }
         }
+    }
+
+    private data class NativeCompletionMetrics(
+        val text: String?,
+        val nativeDecodeTps: Float?,
+        val nativePrefillTps: Float?,
+        val predictedTokensCount: Int?
+    )
+
+    private fun extractNativeCompletionMetrics(result: Map<*, *>?): NativeCompletionMetrics {
+        if (result == null) return NativeCompletionMetrics(null, null, null, null)
+        val text = result["text"] as? String
+        val timings = result["timings"] as? Map<*, *>
+        val decodeTps = ((timings?.get("predicted_per_second") as? Number)
+            ?: (result["tokens_per_second"] as? Number))
+            ?.toFloat()?.takeIf { it > 0f && it.isFinite() }
+        val prefillTps = (timings?.get("prompt_per_second") as? Number)
+            ?.toFloat()?.takeIf { it > 0f && it.isFinite() }
+        val predictedCount = ((result["tokens_predicted"] as? Number)
+            ?: (timings?.get("predicted_n") as? Number))
+            ?.toInt()?.takeIf { it > 0 }
+        return NativeCompletionMetrics(
+            text = text,
+            nativeDecodeTps = decodeTps,
+            nativePrefillTps = prefillTps,
+            predictedTokensCount = predictedCount
+        )
     }
 
     private fun cleanStopTokens(raw: String, stopWords: List<String>): String {
@@ -998,8 +995,22 @@ class LocalInferenceEngine(
                 var llmModule: LlmModule? = null
                 var genJob: Job? = null
                 try {
-                    val startTimeMs = System.currentTimeMillis()
-                    var firstTokenTimeMs = 0L
+                    val targetCtx = powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512))
+                    val nPredict = computeGenerationTokenBudget(targetCtx)
+                    val boundedPrompt = buildFormattedPrompt(
+                        userPrompt = rawUserPrompt,
+                        persona = persona,
+                        ragSnippets = retrievedRag,
+                        conversationHistory = conversationHistory,
+                        effectiveCtxSize = targetCtx
+                    )
+                    val execMilliwatts = powerProfile.estimatedMilliwatts / AiRuntime.EXECUTORCH.energyEfficiencyMultiplier
+                    val tpsTracker = LiveTpsTelemetryTracker(
+                        promptTokensEstimate = LiveTpsTelemetryTracker.estimatePromptTokens(boundedPrompt),
+                        estimatedMilliwatts = execMilliwatts
+                    )
+                    emit(tpsTracker.buildPrefillStep(retrievedRag, InferenceTelemetryPhase.PREFILLING))
+
                     val tokenChannel = Channel<String>(Channel.UNLIMITED)
 
                     llmModule = LlmModule(
@@ -1012,15 +1023,6 @@ class LocalInferenceEngine(
 
                     genJob = engineScope.launch {
                         try {
-                            val targetCtx = powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512))
-                            val nPredict = computeGenerationTokenBudget(targetCtx)
-                            val boundedPrompt = buildFormattedPrompt(
-                                userPrompt = rawUserPrompt,
-                                persona = persona,
-                                ragSnippets = retrievedRag,
-                                conversationHistory = conversationHistory,
-                                effectiveCtxSize = targetCtx
-                            )
                             llmModule.generate(
                                 boundedPrompt,
                                 nPredict,
@@ -1044,48 +1046,21 @@ class LocalInferenceEngine(
 
                     val accumulated = StringBuilder()
                     var tokenCount = 0
-                    val execMilliwatts = powerProfile.estimatedMilliwatts / AiRuntime.EXECUTORCH.energyEfficiencyMultiplier
 
                     for (token in tokenChannel) {
-                        val now = System.currentTimeMillis()
-                        if (tokenCount == 0) firstTokenTimeMs = now
                         tokenCount++
                         accumulated.append(token)
-
-                        val elapsedSec = ((now - startTimeMs) / 1000f).coerceAtLeast(0.001f)
-                        val liveTps = tokenCount / elapsedSec
-                        val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-                        val liveEnergy = (elapsedSec * execMilliwatts) / 3.6f
-
-                        emit(
-                            StreamingStep(
-                                accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
-                                currentTps = liveTps,
-                                ttftMs = ttftMs,
-                                generatedTokens = tokenCount,
-                                energyMicroWh = liveEnergy,
-                                citedRagSnippets = retrievedRag,
-                                isFinished = false
-                            )
-                        )
+                        val cleanText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES)
+                        emit(tpsTracker.onTokenReceived(cleanText, retrievedRag))
                     }
 
                     genJob.join()
 
-                    val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
-                    val finalTps = tokenCount / totalSec
-                    val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else (totalSec * 1000f).toInt()
-                    val finalEnergy = (totalSec * execMilliwatts) / 3.6f
-
                     emit(
-                        StreamingStep(
-                            accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
-                            currentTps = finalTps,
-                            ttftMs = finalTtft,
-                            generatedTokens = tokenCount,
-                            energyMicroWh = finalEnergy,
+                        tpsTracker.buildFinalStep(
+                            cleanAccumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
                             citedRagSnippets = retrievedRag,
-                            isFinished = true
+                            fallbackTokenCount = tokenCount
                         )
                     )
                 } catch (e: UnsatisfiedLinkError) {
@@ -1283,6 +1258,14 @@ class LocalInferenceEngine(
                         effectiveCtxSize = effectiveCtx
                     )
 
+                    val tmacMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
+                    val promptTokenEstimate = LiveTpsTelemetryTracker.estimatePromptTokens(effectivePrompt)
+                    val tpsTracker = LiveTpsTelemetryTracker(
+                        promptTokensEstimate = promptTokenEstimate,
+                        estimatedMilliwatts = tmacMilliwatts
+                    )
+                    emit(tpsTracker.buildPrefillStep(retrievedRag, InferenceTelemetryPhase.PREFILLING))
+
                     val tokenChannel = Channel<String>(Channel.UNLIMITED)
                     llamaCtx.setTokenCallback { partialToken ->
                         if (!isCancelled) {
@@ -1301,11 +1284,11 @@ class LocalInferenceEngine(
                         "stop" to STOP_SEQUENCES
                     )
 
-                    var finalCompletionText: String? = null
+                    var nativeMetrics = NativeCompletionMetrics(null, null, null, null)
                     completionJob = engineScope.launch {
                         try {
                             val result = llamaCtx.completion(completionParams)
-                            finalCompletionText = result["text"] as? String
+                            nativeMetrics = extractNativeCompletionMetrics(result)
                         } catch (e: Throwable) {
                             invalidateMountedOnError = true
                             if (!isCancelled) {
@@ -1318,56 +1301,29 @@ class LocalInferenceEngine(
 
                     val accumulated = StringBuilder()
                     var tokenCount = 0
-                    val startTimeMs = System.currentTimeMillis()
-                    var firstTokenTimeMs = 0L
 
                     for (token in tokenChannel) {
-                        val now = System.currentTimeMillis()
-                        if (tokenCount == 0) firstTokenTimeMs = now
                         tokenCount++
                         accumulated.append(token)
-
-                        val elapsedSec = (now - startTimeMs) / 1000f
-                        val liveTps = if (elapsedSec > 0f) tokenCount / elapsedSec else 0f
-                        val ttftMs = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else 0
-                        val tmacMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
-                        val liveEnergy = (elapsedSec * tmacMilliwatts) / 3.6f
-
-                        emit(
-                            StreamingStep(
-                                accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
-                                currentTps = liveTps,
-                                ttftMs = ttftMs,
-                                generatedTokens = tokenCount,
-                                energyMicroWh = liveEnergy,
-                                citedRagSnippets = retrievedRag,
-                                isFinished = false
-                            )
-                        )
+                        val cleanText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES)
+                        emit(tpsTracker.onTokenReceived(cleanText, retrievedRag))
                     }
 
                     completionJob.join()
 
-                    if (accumulated.isEmpty() && !finalCompletionText.isNullOrBlank()) {
-                        accumulated.append(finalCompletionText)
-                        tokenCount = finalCompletionText!!.split(Regex("\\s+")).size.coerceAtLeast(1)
+                    if (accumulated.isEmpty() && !nativeMetrics.text.isNullOrBlank()) {
+                        accumulated.append(nativeMetrics.text)
+                        tokenCount = nativeMetrics.predictedTokensCount
+                            ?: nativeMetrics.text!!.split(Regex("\\s+")).size.coerceAtLeast(1)
                     }
 
-                    val totalSec = ((System.currentTimeMillis() - startTimeMs) / 1000f).coerceAtLeast(0.001f)
-                    val finalTps = if (totalSec > 0f) tokenCount / totalSec else 0f
-                    val finalTtft = if (firstTokenTimeMs > 0L) (firstTokenTimeMs - startTimeMs).toInt() else (totalSec * 1000f).toInt()
-                    val tmacMilliwatts = (powerProfile.estimatedMilliwatts / effectiveEnergyDivisor)
-                    val finalEnergy = (totalSec * tmacMilliwatts) / 3.6f
-
                     emit(
-                        StreamingStep(
-                            accumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
-                            currentTps = finalTps,
-                            ttftMs = finalTtft,
-                            generatedTokens = tokenCount,
-                            energyMicroWh = finalEnergy,
+                        tpsTracker.buildFinalStep(
+                            cleanAccumulatedText = cleanStopTokens(accumulated.toString(), STOP_SEQUENCES),
                             citedRagSnippets = retrievedRag,
-                            isFinished = true
+                            fallbackTokenCount = tokenCount,
+                            nativeDecodeTpsOverride = nativeMetrics.nativeDecodeTps,
+                            nativePrefillTpsOverride = nativeMetrics.nativePrefillTps
                         )
                     )
                 } catch (e: UnsatisfiedLinkError) {

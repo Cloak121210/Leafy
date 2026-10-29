@@ -22,8 +22,8 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
         assertEquals("Leafy", appName)
-        assertEquals("v0.8", BuildConfig.VERSION_NAME)
-        assertEquals(8, BuildConfig.VERSION_CODE)
+        assertEquals("v0.8.5", BuildConfig.VERSION_NAME)
+        assertEquals(9, BuildConfig.VERSION_CODE)
     }
 
     @Test
@@ -396,4 +396,61 @@ class ExampleRobolectricTest {
             tempGguf.delete()
         }
     }
+
+    @Test
+    fun `live tps telemetry tracker separates prefill TTFT from pure decode TPS and builds sparkline`() {
+        var fakeClockNs = 1_000_000_000L // 1.0s baseline
+        val tracker = com.example.engine.LiveTpsTelemetryTracker(
+            promptTokensEstimate = 60,
+            estimatedMilliwatts = 1800f,
+            nanoTimeProvider = { fakeClockNs }
+        )
+
+        // 1. Prefill phase at +300ms
+        fakeClockNs += 300_000_000L
+        val prefillState = tracker.buildPrefillStep(citedRagSnippets = emptyList())
+        assertEquals(com.example.engine.InferenceTelemetryPhase.PREFILLING, prefillState.phase)
+        assertEquals(300, prefillState.ttftMs)
+        assertEquals(0, prefillState.generatedTokens)
+        assertEquals(60, prefillState.promptTokensEstimate)
+
+        // 2. First token arrives at +500ms total elapsed (TTFT = 500ms, prefill = 60 tok / 0.5s = 120 tok/s)
+        fakeClockNs += 200_000_000L
+        val firstTokenState = tracker.onTokenReceived(
+            cleanAccumulatedText = "Hello",
+            citedRagSnippets = emptyList(),
+            pieceTokenDelta = 1
+        )
+        assertEquals(com.example.engine.InferenceTelemetryPhase.DECODING, firstTokenState.phase)
+        assertEquals(500, firstTokenState.ttftMs)
+        assertEquals(1, firstTokenState.generatedTokens)
+        assertEquals(120f, firstTokenState.prefillTps, 1.0f)
+
+        // 3. Emit 10 more tokens spaced by 50ms each (20 tok/s pure decode rate, 50 ms/tok ITL)
+        val sb = StringBuilder("Hello")
+        for (i in 1..10) {
+            fakeClockNs += 50_000_000L // +50ms per token
+            sb.append(" tok$i")
+            tracker.onTokenReceived(
+                cleanAccumulatedText = sb.toString(),
+                citedRagSnippets = emptyList(),
+                pieceTokenDelta = 1
+            )
+        }
+
+        val finalState = tracker.buildFinalStep(
+            cleanAccumulatedText = sb.toString(),
+            citedRagSnippets = emptyList()
+        )
+        assertEquals(com.example.engine.InferenceTelemetryPhase.COMPLETED, finalState.phase)
+        assertEquals(11, finalState.generatedTokens)
+        assertEquals(500, finalState.ttftMs)
+        // Pure decode: 10 decode tokens after first token over 500ms = 20.0 tok/s
+        // (Whereas naive total-elapsed TPS would have been 11 / 1.0s = 11.0 tok/s!)
+        assertEquals(20.0f, finalState.currentTps, 0.5f)
+        assertEquals(50.0f, finalState.interTokenLatencyMs, 1.5f)
+        assertTrue("Peak TPS should be at least 20 tok/s", finalState.peakTps >= 19.5f)
+        assertTrue("Sparkline series should contain recorded samples", finalState.tpsSeries.isNotEmpty())
+    }
 }
+

@@ -942,8 +942,14 @@ private fun LeafyPowerModesAndStudioSheet(
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.size(14.dp)
                     )
+                    val sheetTps = when {
+                        uiState.tpsTelemetry.instantTps > 0f -> uiState.tpsTelemetry.instantTps
+                        uiState.tpsTelemetry.sessionAverageTps > 0f -> uiState.tpsTelemetry.sessionAverageTps
+                        else -> 0f
+                    }
+                    val tpsPrefix = if (sheetTps > 0f) "${"%.1f".format(sheetTps)} t/s • " else ""
                     Text(
-                        text = "${uiState.telemetry.batteryPercent}% • ${uiState.telemetry.batteryTempCelsius}°C",
+                        text = "$tpsPrefix${uiState.telemetry.batteryPercent}% • ${uiState.telemetry.batteryTempCelsius}°C",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFamily = JetBrainsMonoFontFamily,
                             fontWeight = FontWeight.Bold

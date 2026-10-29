@@ -16,9 +16,11 @@ import com.example.data.PowerProfile
 import com.example.data.RagDocumentEntity
 import com.example.engine.DeviceTelemetryManager
 import com.example.engine.HardwareTelemetrySnapshot
+import com.example.engine.InferenceTelemetryPhase
 import com.example.engine.LocalInferenceEngine
 import com.example.engine.ModelDownloadManager
 import com.example.engine.OfflineVoiceHelper
+import com.example.engine.TpsTelemetrySnapshot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -66,7 +68,14 @@ data class StreamingPreviewState(
     val citedRagTitles: List<String>,
     val runtime: AiRuntime,
     val modelName: String,
-    val quantization: String
+    val quantization: String,
+    val instantTps: Float = liveTps,
+    val peakTps: Float = liveTps,
+    val interTokenLatencyMs: Float = if (liveTps > 0f) 1000f / liveTps else 0f,
+    val prefillTps: Float = 0f,
+    val promptTokensEstimate: Int = 0,
+    val phase: InferenceTelemetryPhase = InferenceTelemetryPhase.DECODING,
+    val tpsSeries: List<Float> = emptyList()
 )
 
 data class LeafyUiState(
@@ -84,6 +93,7 @@ data class LeafyUiState(
     val activePersona: PersonaPresetEntity? = null,
     val streamingPreview: StreamingPreviewState? = null,
     val telemetry: HardwareTelemetrySnapshot = HardwareTelemetrySnapshot(),
+    val tpsTelemetry: TpsTelemetrySnapshot = TpsTelemetrySnapshot(),
     val speakingMessageId: Long? = null,
     val useComicSans: Boolean = false,
     val isDarkTheme: Boolean = false,
@@ -120,6 +130,7 @@ class LeafyViewModel(
     )
     private val _streamingPreview = MutableStateFlow<StreamingPreviewState?>(null)
     private val _telemetry = MutableStateFlow(HardwareTelemetrySnapshot())
+    private val _sessionTpsSnapshot = MutableStateFlow(TpsTelemetrySnapshot())
     private val _useComicSans = MutableStateFlow(prefs.getBoolean(KEY_USE_COMIC_SANS, false))
     private val _isDarkTheme = MutableStateFlow(prefs.getBoolean(KEY_IS_DARK_THEME, false))
     private val _statusBannerMessage = MutableStateFlow<String?>(null)
@@ -184,9 +195,10 @@ class LeafyViewModel(
     private val importFlow = combine(
         _isImportingModel,
         _importProgress,
-        _importStatusText
-    ) { isImporting, progress, statusText ->
-        Triple(isImporting, progress, statusText)
+        _importStatusText,
+        _sessionTpsSnapshot
+    ) { isImporting, progress, statusText, sessionTps ->
+        Quadruple(isImporting, progress, statusText, sessionTps)
     }
 
     val uiState: StateFlow<LeafyUiState> = combine(
@@ -248,6 +260,13 @@ class LeafyViewModel(
         val activePersona = personas.find { it.id == activeConv?.activePersonaId }
             ?: personas.firstOrNull()
 
+        val computedTpsTelemetry = resolveLiveTpsTelemetry(
+            streaming = streaming,
+            sessionSnapshot = importState.fourth,
+            branchMessages = branchedPath.map { it.node },
+            totalSessionTokens = totalTokens
+        )
+
         LeafyUiState(
             currentTab = currentTab,
             conversations = conversations,
@@ -263,11 +282,12 @@ class LeafyViewModel(
             activePersona = activePersona,
             streamingPreview = streaming,
             telemetry = telemetry,
+            tpsTelemetry = computedTpsTelemetry,
             speakingMessageId = speakingId,
             useComicSans = useComicSans,
             isDarkTheme = isDarkTheme,
             statusBannerMessage = banner,
-            totalSessionTokens = totalTokens,
+            totalSessionTokens = computedTpsTelemetry.totalSessionTokens,
             isImportingModel = importState.first,
             importProgress = importState.second,
             importStatusText = importState.third
@@ -299,13 +319,117 @@ class LeafyViewModel(
             scanDeviceForLocalModels(silent = true)
         }
 
-        // Background hardware telemetry sampler
+        // Adaptive hardware telemetry sampler (faster cadence during active token streaming)
         viewModelScope.launch {
             while (isActive) {
                 refreshTelemetry()
-                delay(2500L)
+                val intervalMs = if (_streamingPreview.value != null) 450L else 2000L
+                delay(intervalMs)
             }
         }
+    }
+
+    private fun resolveLiveTpsTelemetry(
+        streaming: StreamingPreviewState?,
+        sessionSnapshot: TpsTelemetrySnapshot,
+        branchMessages: List<MessageNodeEntity>,
+        totalSessionTokens: Int
+    ): TpsTelemetrySnapshot {
+        val assistantNodes = branchMessages.filter {
+            it.role.equals("ASSISTANT", ignoreCase = true) && it.tokensPerSec > 0f
+        }
+        val histNodeTps = assistantNodes.map { it.tokensPerSec }
+        val histAvgTps = if (histNodeTps.isNotEmpty()) histNodeTps.average().toFloat() else 0f
+        val histPeakTps = histNodeTps.maxOrNull() ?: 0f
+        val histAvgTtft = if (assistantNodes.isNotEmpty()) {
+            assistantNodes.map { it.ttftMs }.average().toInt()
+        } else 0
+        val histTotalTokens = assistantNodes.sumOf { it.tokenCount }
+        val histTotalEnergy = assistantNodes.map { it.energyMicroWh.toDouble() }.sum().toFloat()
+
+        val effectiveTotalTokens = maxOf(totalSessionTokens, histTotalTokens) + (streaming?.generatedTokens ?: 0)
+        val combinedHistory = buildList {
+            addAll(histNodeTps)
+            addAll(sessionSnapshot.tpsHistory)
+            if (streaming != null && streaming.tpsSeries.isNotEmpty()) {
+                addAll(streaming.tpsSeries)
+            }
+        }.filter { it > 0f }.takeLast(36)
+
+        if (streaming != null) {
+            val peak = maxOf(sessionSnapshot.sessionPeakTps, histPeakTps, streaming.peakTps, streaming.instantTps)
+            val avgTps = when {
+                sessionSnapshot.sessionAverageTps > 0f && streaming.liveTps > 0f ->
+                    (sessionSnapshot.sessionAverageTps + streaming.liveTps) / 2f
+                streaming.liveTps > 0f -> streaming.liveTps
+                sessionSnapshot.sessionAverageTps > 0f -> sessionSnapshot.sessionAverageTps
+                else -> histAvgTps
+            }
+            val uWhPerTok = if (streaming.generatedTokens > 0) {
+                streaming.energyMicroWh / streaming.generatedTokens
+            } else {
+                sessionSnapshot.energyPerTokenMicroWh
+            }
+            val tokPerMwh = if (uWhPerTok > 0f) 1000f / uWhPerTok else 0f
+
+            return TpsTelemetrySnapshot(
+                phase = streaming.phase,
+                instantTps = streaming.instantTps,
+                decodeTps = streaming.liveTps,
+                sessionAverageTps = avgTps,
+                sessionPeakTps = peak,
+                prefillTps = if (streaming.prefillTps > 0f) streaming.prefillTps else sessionSnapshot.prefillTps,
+                lastTtftMs = streaming.ttftMs,
+                averageTtftMs = if (sessionSnapshot.averageTtftMs > 0) sessionSnapshot.averageTtftMs else streaming.ttftMs,
+                interTokenLatencyMs = streaming.interTokenLatencyMs,
+                promptTokensEstimate = streaming.promptTokensEstimate,
+                generatedTokens = streaming.generatedTokens,
+                totalSessionTokens = effectiveTotalTokens,
+                energyMicroWh = streaming.energyMicroWh,
+                energyPerTokenMicroWh = uWhPerTok,
+                tokensPerMilliwattHour = tokPerMwh,
+                tpsHistory = combinedHistory,
+                completedRunsCount = maxOf(sessionSnapshot.completedRunsCount, assistantNodes.size)
+            )
+        }
+
+        val lastNode = assistantNodes.lastOrNull()
+        val decodeTps = if (sessionSnapshot.decodeTps > 0f) sessionSnapshot.decodeTps else (lastNode?.tokensPerSec ?: 0f)
+        val avgTps = if (sessionSnapshot.sessionAverageTps > 0f) sessionSnapshot.sessionAverageTps else histAvgTps
+        val peakTps = maxOf(sessionSnapshot.sessionPeakTps, histPeakTps, decodeTps)
+        val lastTtft = if (sessionSnapshot.lastTtftMs > 0) sessionSnapshot.lastTtftMs else (lastNode?.ttftMs ?: 0)
+        val avgTtft = if (sessionSnapshot.averageTtftMs > 0) sessionSnapshot.averageTtftMs else histAvgTtft
+        val itlMs = when {
+            sessionSnapshot.interTokenLatencyMs > 0f -> sessionSnapshot.interTokenLatencyMs
+            decodeTps > 0f -> 1000f / decodeTps
+            else -> 0f
+        }
+        val uWhPerTok = when {
+            sessionSnapshot.energyPerTokenMicroWh > 0f -> sessionSnapshot.energyPerTokenMicroWh
+            histTotalTokens > 0 && histTotalEnergy > 0f -> histTotalEnergy / histTotalTokens
+            else -> 0f
+        }
+        val tokPerMwh = if (uWhPerTok > 0f) 1000f / uWhPerTok else 0f
+
+        return TpsTelemetrySnapshot(
+            phase = if (decodeTps > 0f) InferenceTelemetryPhase.COMPLETED else InferenceTelemetryPhase.IDLE,
+            instantTps = decodeTps,
+            decodeTps = decodeTps,
+            sessionAverageTps = avgTps,
+            sessionPeakTps = peakTps,
+            prefillTps = sessionSnapshot.prefillTps,
+            lastTtftMs = lastTtft,
+            averageTtftMs = avgTtft,
+            interTokenLatencyMs = itlMs,
+            promptTokensEstimate = sessionSnapshot.promptTokensEstimate,
+            generatedTokens = if (sessionSnapshot.generatedTokens > 0) sessionSnapshot.generatedTokens else (lastNode?.tokenCount ?: 0),
+            totalSessionTokens = effectiveTotalTokens,
+            energyMicroWh = if (sessionSnapshot.energyMicroWh > 0f) sessionSnapshot.energyMicroWh else (lastNode?.energyMicroWh ?: 0f),
+            energyPerTokenMicroWh = uWhPerTok,
+            tokensPerMilliwattHour = tokPerMwh,
+            tpsHistory = combinedHistory,
+            completedRunsCount = maxOf(sessionSnapshot.completedRunsCount, assistantNodes.size)
+        )
     }
 
     private fun resolveActiveBranchPath(
@@ -786,9 +910,15 @@ class LeafyViewModel(
         streamingJob = viewModelScope.launch {
             var finalStepText = ""
             var finalTps = 0f
+            var finalInstantTps = 0f
+            var finalPeakTps = 0f
+            var finalItlMs = 0f
+            var finalPrefillTps = 0f
+            var finalPromptTokens = 0
             var finalTtft = 0
             var finalTokens = 0
             var finalEnergy = 0f
+            var finalTpsSeries = emptyList<Float>()
             var finalCitations = emptyList<String>()
             var wasCancelled = false
             var streamError: String? = null
@@ -806,9 +936,25 @@ class LeafyViewModel(
                 ).collect { step ->
                     finalStepText = step.accumulatedText
                     finalTps = step.currentTps
+                    finalInstantTps = step.instantTps
+                    finalPeakTps = maxOf(finalPeakTps, step.peakTps)
+                    finalItlMs = step.interTokenLatencyMs
+                    if (step.prefillTps > 0f) finalPrefillTps = step.prefillTps
+                    if (step.promptTokensEstimate > 0) finalPromptTokens = step.promptTokensEstimate
                     finalTtft = step.ttftMs
                     finalTokens = step.generatedTokens
-                    finalEnergy = step.energyMicroWh
+
+                    // Incorporate real hardware power measurement when available
+                    val hw = _telemetry.value
+                    val adjustedEnergy = if (hw.isHardwarePowerMeasured && hw.instantaneousMilliwatts > 0 && powerProfile.estimatedMilliwatts > 0) {
+                        step.energyMicroWh * (hw.instantaneousMilliwatts.toFloat() / powerProfile.estimatedMilliwatts.toFloat())
+                    } else {
+                        step.energyMicroWh
+                    }
+                    finalEnergy = adjustedEnergy
+                    if (step.tpsSeries.isNotEmpty()) {
+                        finalTpsSeries = step.tpsSeries
+                    }
                     finalCitations = step.citedRagSnippets.map { it.documentTitle }
 
                     _streamingPreview.value = StreamingStepToPreview(
@@ -817,11 +963,18 @@ class LeafyViewModel(
                         tps = step.currentTps,
                         ttft = step.ttftMs,
                         tokens = step.generatedTokens,
-                        energy = step.energyMicroWh,
+                        energy = adjustedEnergy,
                         citations = finalCitations,
                         runtime = runtime,
                         modelName = model.name,
-                        quantization = model.quantization
+                        quantization = model.quantization,
+                        instantTps = step.instantTps,
+                        peakTps = finalPeakTps,
+                        interTokenLatencyMs = step.interTokenLatencyMs,
+                        prefillTps = finalPrefillTps,
+                        promptTokensEstimate = finalPromptTokens,
+                        phase = step.phase,
+                        tpsSeries = finalTpsSeries
                     )
                 }
             } catch (ce: CancellationException) {
@@ -833,6 +986,51 @@ class LeafyViewModel(
                 withContext(NonCancellable) {
                     _streamingPreview.value = null
                     _totalSessionTokens.value += finalTokens
+
+                    if (finalTps > 0f || finalTokens > 0) {
+                        val prev = _sessionTpsSnapshot.value
+                        val prevRuns = prev.completedRunsCount
+                        val nextRuns = prevRuns + 1
+                        val nextAvgTps = if (prevRuns > 0 && prev.sessionAverageTps > 0f && finalTps > 0f) {
+                            ((prev.sessionAverageTps * prevRuns) + finalTps) / nextRuns
+                        } else if (finalTps > 0f) {
+                            finalTps
+                        } else {
+                            prev.sessionAverageTps
+                        }
+                        val nextAvgTtft = if (prevRuns > 0 && prev.averageTtftMs > 0 && finalTtft > 0) {
+                            ((prev.averageTtftMs * prevRuns) + finalTtft) / nextRuns
+                        } else if (finalTtft > 0) {
+                            finalTtft
+                        } else {
+                            prev.averageTtftMs
+                        }
+                        val nextHistory = (prev.tpsHistory + (if (finalTpsSeries.isNotEmpty()) finalTpsSeries else listOfNotNull(finalTps.takeIf { it > 0f })))
+                            .takeLast(36)
+                        val uWhPerTok = if (finalTokens > 0) finalEnergy / finalTokens else prev.energyPerTokenMicroWh
+                        val tokPerMwh = if (uWhPerTok > 0f) 1000f / uWhPerTok else prev.tokensPerMilliwattHour
+
+                        _sessionTpsSnapshot.value = TpsTelemetrySnapshot(
+                            phase = InferenceTelemetryPhase.COMPLETED,
+                            instantTps = finalInstantTps.takeIf { it > 0f } ?: finalTps,
+                            decodeTps = finalTps,
+                            sessionAverageTps = nextAvgTps,
+                            sessionPeakTps = maxOf(prev.sessionPeakTps, finalPeakTps, finalTps),
+                            prefillTps = if (finalPrefillTps > 0f) finalPrefillTps else prev.prefillTps,
+                            lastTtftMs = finalTtft,
+                            averageTtftMs = nextAvgTtft,
+                            interTokenLatencyMs = if (finalItlMs > 0f) finalItlMs else if (finalTps > 0f) 1000f / finalTps else prev.interTokenLatencyMs,
+                            promptTokensEstimate = finalPromptTokens,
+                            generatedTokens = finalTokens,
+                            totalSessionTokens = _totalSessionTokens.value,
+                            energyMicroWh = finalEnergy,
+                            energyPerTokenMicroWh = uWhPerTok,
+                            tokensPerMilliwattHour = tokPerMwh,
+                            tpsHistory = nextHistory,
+                            completedRunsCount = nextRuns
+                        )
+                    }
+
                     refreshTelemetry()
 
                     if (finalTps > 0f) {
@@ -893,7 +1091,14 @@ class LeafyViewModel(
         citations: List<String>,
         runtime: AiRuntime,
         modelName: String,
-        quantization: String
+        quantization: String,
+        instantTps: Float = tps,
+        peakTps: Float = tps,
+        interTokenLatencyMs: Float = if (tps > 0f) 1000f / tps else 0f,
+        prefillTps: Float = 0f,
+        promptTokensEstimate: Int = 0,
+        phase: InferenceTelemetryPhase = InferenceTelemetryPhase.DECODING,
+        tpsSeries: List<Float> = emptyList()
     ) = StreamingPreviewState(
         parentNodeId = parentNodeId,
         partialText = stepText,
@@ -904,7 +1109,14 @@ class LeafyViewModel(
         citedRagTitles = citations,
         runtime = runtime,
         modelName = modelName,
-        quantization = quantization
+        quantization = quantization,
+        instantTps = instantTps,
+        peakTps = peakTps,
+        interTokenLatencyMs = interTokenLatencyMs,
+        prefillTps = prefillTps,
+        promptTokensEstimate = promptTokensEstimate,
+        phase = phase,
+        tpsSeries = tpsSeries
     )
 
     fun stopStreaming() {
@@ -1246,6 +1458,8 @@ class LeafyViewModel(
         stopStreaming()
         viewModelScope.launch {
             repository.wipeAllHistory()
+            _sessionTpsSnapshot.value = TpsTelemetrySnapshot()
+            _totalSessionTokens.value = 0
             val newId = repository.createConversation(
                 title = "Local AI Session",
                 modelId = uiState.value.activeModel?.id ?: "",
@@ -1253,6 +1467,7 @@ class LeafyViewModel(
                 personaId = 1L
             )
             setActiveConversationPref(newId)
+            refreshTelemetry()
             showTransientBanner("Local chat database wiped & reset to clean offline state.")
         }
     }
@@ -1319,6 +1534,13 @@ class LeafyViewModel(
             }
     }
 }
+
+private data class Quadruple<A, B, C, D>(
+    val first: A,
+    val second: B,
+    val third: C,
+    val fourth: D
+)
 
 private data class Quintuple<A, B, C, D, E>(
     val first: A,
