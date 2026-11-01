@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,34 +48,54 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.data.AiRuntime
 import com.example.data.LocalModelEntity
 import com.example.data.PowerProfile
-import com.example.engine.HardwareTelemetrySnapshot
-import com.example.ui.theme.BalancedProfileAmber
-import com.example.ui.theme.EcoProfileGreen
+import com.example.ui.theme.BalancedProfileDark
+import com.example.ui.theme.BalancedProfileLight
+import com.example.ui.theme.EcoProfileDark
+import com.example.ui.theme.EcoProfileLight
 import com.example.ui.theme.JetBrainsMonoFontFamily
-import com.example.ui.theme.PerformanceProfileCoral
-import com.example.ui.theme.RuntimeBitnetColor
-import com.example.ui.theme.RuntimeExecuTorchColor
-import com.example.ui.theme.RuntimeLlamaCppColor
-import com.example.ui.theme.RuntimeTMacColor
+import com.example.ui.theme.PerformanceProfileDark
+import com.example.ui.theme.PerformanceProfileLight
+import com.example.ui.theme.RuntimeBitnetDark
+import com.example.ui.theme.RuntimeBitnetLight
+import com.example.ui.theme.RuntimeExecuTorchDark
+import com.example.ui.theme.RuntimeExecuTorchLight
+import com.example.ui.theme.RuntimeLlamaCppDark
+import com.example.ui.theme.RuntimeLlamaCppLight
+import com.example.ui.theme.RuntimeTMacDark
+import com.example.ui.theme.RuntimeTMacLight
 
-fun runtimeAccentColor(runtime: AiRuntime): Color = when (runtime) {
-    AiRuntime.LLAMA_CPP -> RuntimeLlamaCppColor
-    AiRuntime.BITNET_CPP -> RuntimeBitnetColor
-    AiRuntime.T_MAC -> RuntimeTMacColor
-    AiRuntime.EXECUTORCH -> RuntimeExecuTorchColor
+fun runtimeAccentColorForTheme(runtime: AiRuntime, isDarkTheme: Boolean): Color = when (runtime) {
+    AiRuntime.LLAMA_CPP -> if (isDarkTheme) RuntimeLlamaCppDark else RuntimeLlamaCppLight
+    AiRuntime.BITNET_CPP -> if (isDarkTheme) RuntimeBitnetDark else RuntimeBitnetLight
+    AiRuntime.T_MAC -> if (isDarkTheme) RuntimeTMacDark else RuntimeTMacLight
+    AiRuntime.EXECUTORCH -> if (isDarkTheme) RuntimeExecuTorchDark else RuntimeExecuTorchLight
 }
 
-fun powerProfileAccentColor(profile: PowerProfile): Color = when (profile) {
-    PowerProfile.ECO -> EcoProfileGreen
-    PowerProfile.BALANCED -> BalancedProfileAmber
-    PowerProfile.PERFORMANCE -> PerformanceProfileCoral
+fun powerProfileAccentColorForTheme(profile: PowerProfile, isDarkTheme: Boolean): Color = when (profile) {
+    PowerProfile.ECO -> if (isDarkTheme) EcoProfileDark else EcoProfileLight
+    PowerProfile.BALANCED -> if (isDarkTheme) BalancedProfileDark else BalancedProfileLight
+    PowerProfile.PERFORMANCE -> if (isDarkTheme) PerformanceProfileDark else PerformanceProfileLight
+}
+
+@Composable
+fun runtimeAccentColor(runtime: AiRuntime): Color {
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    return runtimeAccentColorForTheme(runtime, isDark)
+}
+
+@Composable
+fun powerProfileAccentColor(profile: PowerProfile): Color {
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    return powerProfileAccentColorForTheme(profile, isDark)
 }
 
 /**
@@ -179,7 +200,9 @@ fun RuntimeBadgePill(
                     fontFamily = JetBrainsMonoFontFamily,
                     fontWeight = FontWeight.Bold
                 ),
-                color = accent
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -192,36 +215,83 @@ fun PowerProfilePill(
     modifier: Modifier = Modifier
 ) {
     val color = powerProfileAccentColor(profile)
-    Surface(
+    Box(
         modifier = modifier
             .then(
-                if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+                if (onClick != null) {
+                    Modifier
+                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onClick)
+                } else {
+                    Modifier
+                }
             ),
-        shape = RoundedCornerShape(50),
-        color = color.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.45f))
+        contentAlignment = Alignment.Center
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = color.copy(alpha = 0.14f),
+            border = BorderStroke(1.dp, color.copy(alpha = 0.45f))
         ) {
-            Icon(
-                imageVector = when (profile) {
-                    PowerProfile.ECO -> Icons.Default.EnergySavingsLeaf
-                    PowerProfile.BALANCED -> Icons.Default.Speed
-                    PowerProfile.PERFORMANCE -> Icons.Default.Bolt
-                },
-                contentDescription = profile.displayName,
-                tint = color,
-                modifier = Modifier.size(14.dp)
-            )
-            Text(
-                text = profile.displayName,
-                style = MaterialTheme.typography.labelSmall,
-                color = color,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = when (profile) {
+                        PowerProfile.ECO -> Icons.Default.EnergySavingsLeaf
+                        PowerProfile.BALANCED -> Icons.Default.Speed
+                        PowerProfile.PERFORMANCE -> Icons.Default.Bolt
+                    },
+                    contentDescription = profile.displayName,
+                    tint = color,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = profile.displayName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = color,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Provides an outer >= 48dp x 48dp accessible hit area while preserving a compact visual circular Surface inside.
+ */
+@Composable
+private fun TopBarCircularButton(
+    onClick: () -> Unit,
+    visualSize: Dp,
+    containerColor: Color,
+    border: BorderStroke?,
+    testTag: String,
+    content: @Composable () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .size(48.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .testTag(testTag),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier.size(visualSize),
+            shape = CircleShape,
+            color = containerColor,
+            border = border
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                content()
+            }
         }
     }
 }
@@ -244,7 +314,8 @@ fun LeafyCleanTopBar(
     onOpenRuntimeSwitcher: () -> Unit,
     onOpenSpecialCommandMenu: () -> Unit,
     onOpenSettingsScreen: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isSettingsActive: Boolean = false
 ) {
     Column(
         modifier = modifier
@@ -259,200 +330,198 @@ fun LeafyCleanTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                .padding(horizontal = 6.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             if (isChatFrontScreen) {
-                // Left: Organic Canopy Drawer button
-                Surface(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .clickable(onClick = onOpenCanopyDrawer)
-                        .testTag("open_canopy_drawer_button"),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                // Left: Organic Canopy Drawer button (48dp touch target, 38dp visual circle)
+                TopBarCircularButton(
+                    onClick = onOpenCanopyDrawer,
+                    visualSize = 38.dp,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                    testTag = "open_canopy_drawer_button"
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Menu,
-                            contentDescription = "Open Leafy menu drawer",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Menu,
+                        contentDescription = "Open Leafy menu drawer",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(19.dp)
+                    )
                 }
 
                 // Center: Dedicated Local Model Switcher Pill (Strictly for Local Models)
-                Surface(
+                Box(
                     modifier = Modifier
                         .weight(1f)
+                        .sizeIn(minHeight = 48.dp)
                         .clip(RoundedCornerShape(50))
                         .clickable(onClick = onOpenModelSwitcher)
                         .testTag("top_model_switcher_pill"),
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.92f),
-                    shadowElevation = 2.dp,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    contentAlignment = Alignment.Center
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.92f),
+                        shadowElevation = 2.dp,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
                     ) {
-                        val hasActiveModel = activeModel != null && activeModel.isInstalled
-                        val dotColor = if (hasActiveModel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
-                        val titleText = if (hasActiveModel) activeModel.name else "No ${activeRuntime.fileExtensions.first()} Model"
-                        val subtitleText = if (hasActiveModel) {
-                            "${activeModel.quantization} • ${activeModel.sizeMb} MB • ${activeRuntime.displayName}"
-                        } else {
-                            "Load model for ${activeRuntime.displayName}"
-                        }
-
-                        Box(
+                        Row(
                             modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(dotColor)
-                        )
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            horizontalAlignment = Alignment.Start
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(
-                                text = titleText,
-                                style = MaterialTheme.typography.labelLarge,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = if (hasActiveModel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                            val hasActiveModel = activeModel != null && activeModel.isInstalled
+                            val dotColor = if (hasActiveModel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+                            val titleText = if (hasActiveModel) activeModel.name else "No ${activeRuntime.fileExtensions.first()} Model"
+                            val subtitleText = if (hasActiveModel) {
+                                "${activeModel.quantization} • ${activeModel.sizeMb} MB • ${activeRuntime.displayName}"
+                            } else {
+                                "Load model for ${activeRuntime.displayName}"
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(dotColor)
                             )
-                            Text(
-                                text = subtitleText,
-                                style = MaterialTheme.typography.labelSmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                horizontalAlignment = Alignment.Start
+                            ) {
+                                Text(
+                                    text = titleText,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (hasActiveModel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = subtitleText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.ExpandMore,
+                                contentDescription = "Switch local model",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
-                        Icon(
-                            imageVector = Icons.Default.ExpandMore,
-                            contentDescription = "Switch local model",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp)
-                        )
                     }
                 }
 
                 // Right: Dedicated Runtime Switcher Button + Power Mode Controls + Settings
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
-                    // Dedicated Runtime Engine Menu Button (Separate from Models & Modes)
-                    Surface(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .clickable(onClick = onOpenRuntimeSwitcher)
-                            .testTag("top_runtime_switcher_button"),
-                        shape = CircleShape,
-                        color = runtimeAccentColor(activeRuntime).copy(alpha = 0.16f),
-                        border = BorderStroke(1.dp, runtimeAccentColor(activeRuntime).copy(alpha = 0.45f))
+                    val runtimeColor = runtimeAccentColor(activeRuntime)
+                    // Dedicated Runtime Engine Menu Button (48dp touch target, 38dp visual circle)
+                    TopBarCircularButton(
+                        onClick = onOpenRuntimeSwitcher,
+                        visualSize = 38.dp,
+                        containerColor = runtimeColor.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, runtimeColor.copy(alpha = 0.45f)),
+                        testTag = "top_runtime_switcher_button"
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.Memory,
-                                contentDescription = "Switch Inference Runtime (${activeRuntime.displayName})",
-                                tint = runtimeAccentColor(activeRuntime),
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.Memory,
+                            contentDescription = "Switch Inference Runtime (${activeRuntime.displayName})",
+                            tint = runtimeColor,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
 
-                    // Power Modes & Studio Controls Button
-                    Surface(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .clickable(onClick = onOpenSpecialCommandMenu)
-                            .testTag("open_special_menu_button"),
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                    // Power Modes & Studio Controls Button (48dp touch target, 38dp visual circle)
+                    TopBarCircularButton(
+                        onClick = onOpenSpecialCommandMenu,
+                        visualSize = 38.dp,
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                        testTag = "open_special_menu_button"
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.Tune,
-                                contentDescription = "Power Modes & Studio Controls",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = "Power Modes & Studio Controls",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
 
-                    Surface(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .clickable(onClick = onOpenSettingsScreen)
-                            .testTag("open_settings_screen_button"),
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                    // Settings & Eco Studio Button (48dp touch target, 38dp visual circle)
+                    TopBarCircularButton(
+                        onClick = onOpenSettingsScreen,
+                        visualSize = 38.dp,
+                        containerColor = if (isSettingsActive) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
+                        },
+                        border = BorderStroke(
+                            if (isSettingsActive) 1.5.dp else 1.dp,
+                            if (isSettingsActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                        ),
+                        testTag = "open_settings_screen_button"
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = "Settings & Eco Studio",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings & Eco Studio",
+                            tint = if (isSettingsActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             } else {
-                // Secondary Screen Header with clean Back to Chat button
+                // Secondary Screen Header with clean Back to Chat button (48dp touch target, 42dp visual circle)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Surface(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .clickable(onClick = onNavigateBackToChat)
-                                .testTag("back_to_chat_button"),
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                        TopBarCircularButton(
+                            onClick = onNavigateBackToChat,
+                            visualSize = 42.dp,
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                            testTag = "back_to_chat_button"
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back to Chat",
-                                    tint = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to Chat",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
                         }
 
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = secondaryScreenTitle,
                                 style = MaterialTheme.typography.titleLarge,
-                                color = MaterialTheme.colorScheme.onBackground
+                                color = MaterialTheme.colorScheme.onBackground,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 text = "Leafy Offline Studio",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }

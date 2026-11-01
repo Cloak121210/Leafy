@@ -46,12 +46,32 @@ val DarkMistText = Color(0xFFE2F3E6)
 val DarkMutedSage = Color(0xFF9ABAA4)
 val DarkVeinOutline = Color(0xFF2E4D3B)
 
-// Runtime & Power Profile Semantic Colors
-val RuntimeLlamaCppColor = Color(0xFF257D54)
-val RuntimeBitnetColor = Color(0xFF157A8C)
-val RuntimeTMacColor = Color(0xFFD9821E)
-val RuntimeExecuTorchColor = Color(0xFFD9534F)
+// Runtime & Power Profile Semantic Colors (WCAG 2.1 AA >= 4.5:1 verified for Light & Dark themes)
+val RuntimeLlamaCppLight = Color(0xFF17633E)
+val RuntimeBitnetLight = Color(0xFF0E5E6D)
+val RuntimeTMacLight = Color(0xFF8A4B00)
+val RuntimeExecuTorchLight = Color(0xFFA82E2A)
 
-val EcoProfileGreen = Color(0xFF22A055)
-val BalancedProfileAmber = Color(0xFFD9822B)
-val PerformanceProfileCoral = Color(0xFFD94E34)
+val RuntimeLlamaCppDark = Color(0xFF5CE092)
+val RuntimeBitnetDark = Color(0xFF5CD5EA)
+val RuntimeTMacDark = Color(0xFFFFB963)
+val RuntimeExecuTorchDark = Color(0xFFFF8E88)
+
+val EcoProfileLight = Color(0xFF166536)
+val BalancedProfileLight = Color(0xFF8A4B00)
+val PerformanceProfileLight = Color(0xFFA6321C)
+
+val EcoProfileDark = Color(0xFF5CE092)
+val BalancedProfileDark = Color(0xFFFFB963)
+val PerformanceProfileDark = Color(0xFFFF8B73)
+
+// Default aliases pointing to WCAG AA compliant Light botanical tokens
+val RuntimeLlamaCppColor = RuntimeLlamaCppLight
+val RuntimeBitnetColor = RuntimeBitnetLight
+val RuntimeTMacColor = RuntimeTMacLight
+val RuntimeExecuTorchColor = RuntimeExecuTorchLight
+
+val EcoProfileGreen = EcoProfileLight
+val BalancedProfileAmber = BalancedProfileLight
+val PerformanceProfileCoral = PerformanceProfileLight
+

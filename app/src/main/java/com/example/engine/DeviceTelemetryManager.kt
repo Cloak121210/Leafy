@@ -26,40 +26,39 @@ data class TpsTelemetrySnapshot(
     val lastTtftMs: Int = 0,
     val averageTtftMs: Int = 0,
     val interTokenLatencyMs: Float = 0f,
-    val promptTokensEstimate: Int = 0,
+    val promptTokensCount: Int = 0,
     val generatedTokens: Int = 0,
     val totalSessionTokens: Int = 0,
-    val energyMicroWh: Float = 0f,
-    val energyPerTokenMicroWh: Float = 0f,
-    val tokensPerMilliwattHour: Float = 0f,
+    val energyMicroWh: Float = -1f,
+    val energyPerTokenMicroWh: Float = -1f,
+    val tokensPerMilliwattHour: Float = -1f,
     val tpsHistory: List<Float> = emptyList(),
     val completedRunsCount: Int = 0
 )
 
 data class HardwareTelemetrySnapshot(
-    val batteryPercent: Int = 100,
+    val batteryPercent: Int = -1,
     val isCharging: Boolean = false,
-    val batteryTempCelsius: Float = 0f,
+    val batteryTempCelsius: Float = -1f,
     val batteryVoltageMv: Int = 0,
     val currentNowMicroAmps: Long = 0L,
-    val instantaneousMilliwatts: Int = 0,
+    val instantaneousMilliwatts: Int = -1,
     val isHardwarePowerMeasured: Boolean = false,
     val totalRamMb: Int = 0,
     val availableRamMb: Int = 0,
     val usedRamMb: Int = 0,
-    val cpuCores: Int = Runtime.getRuntime().availableProcessors(),
-    val savedCarbonGramsSession: Float = 0f
+    val cpuCores: Int = Runtime.getRuntime().availableProcessors()
 )
 
 /**
- * High-precision monotonic TPS & latency tracker for on-device LLM inference.
- * Separates prompt prefill (TTFT) from token generation (decode TPS), computes
- * sliding-window instantaneous TPS with EMA smoothing, tracks peak throughput,
- * and records a sparkline series for real-time telemetry visualization.
+ * Monotonic clock telemetry tracker for on-device LLM inference.
+ * Strictly separates prompt prefill (TTFT & prefill TPS) from token generation (decode TPS),
+ * counts tokens strictly in the generation loop (never from character length),
+ * and reports energy only when hardware battery current & voltage are measured.
  */
 class LiveTpsTelemetryTracker(
-    val promptTokensEstimate: Int,
-    private val estimatedMilliwatts: Float,
+    private var promptTokensCount: Int = 0,
+    private val hardwareMeasuredMilliwatts: Float = -1f,
     private val nanoTimeProvider: () -> Long = { System.nanoTime() }
 ) {
     private val startTimeNs: Long = nanoTimeProvider()
@@ -73,6 +72,20 @@ class LiveTpsTelemetryTracker(
     private var prefillTps: Float = 0f
     private val sparklineSeries = ArrayDeque<Float>(MAX_SPARKLINE_POINTS)
 
+    fun updatePromptTokenCount(exactTokenCount: Int) {
+        if (exactTokenCount >= 0) {
+            promptTokensCount = exactTokenCount
+        }
+    }
+
+    private fun computeHardwareEnergyMicroWh(elapsedSec: Float): Float {
+        return if (hardwareMeasuredMilliwatts > 0f && elapsedSec > 0f) {
+            (elapsedSec * hardwareMeasuredMilliwatts) / 3.6f
+        } else {
+            -1f
+        }
+    }
+
     fun buildPrefillStep(
         citedRagSnippets: List<RetrievedRagSnippet>,
         phase: InferenceTelemetryPhase = InferenceTelemetryPhase.PREFILLING
@@ -80,20 +93,19 @@ class LiveTpsTelemetryTracker(
         val nowNs = nanoTimeProvider()
         val elapsedMs = ((nowNs - startTimeNs) / 1_000_000L).toInt().coerceAtLeast(0)
         val elapsedSec = elapsedMs / 1000f
-        val liveEnergy = (elapsedSec * estimatedMilliwatts) / 3.6f
         return StreamingStep(
             accumulatedText = "",
             currentTps = 0f,
             ttftMs = elapsedMs,
             generatedTokens = 0,
-            energyMicroWh = liveEnergy,
+            energyMicroWh = computeHardwareEnergyMicroWh(elapsedSec),
             citedRagSnippets = citedRagSnippets,
             isFinished = false,
             instantTps = 0f,
             peakTps = 0f,
             interTokenLatencyMs = 0f,
             prefillTps = 0f,
-            promptTokensEstimate = promptTokensEstimate,
+            promptTokensCount = promptTokensCount,
             phase = phase,
             tpsSeries = emptyList()
         )
@@ -110,8 +122,8 @@ class LiveTpsTelemetryTracker(
         if (tokenCount == 0) {
             firstTokenTimeNs = nowNs
             val ttftSec = ((firstTokenTimeNs - startTimeNs) / 1_000_000_000.0).toFloat()
-            prefillTps = if (ttftSec > 0.001f && promptTokensEstimate > 0) {
-                (promptTokensEstimate / ttftSec).coerceAtMost(5000f)
+            prefillTps = if (ttftSec > 0.0005f && promptTokensCount > 0) {
+                promptTokensCount / ttftSec
             } else {
                 0f
             }
@@ -123,7 +135,6 @@ class LiveTpsTelemetryTracker(
         while (recentTokenTimesNs.size > WINDOW_MAX_TOKENS) {
             recentTokenTimesNs.removeFirst()
         }
-        // Evict timestamps older than 1.8s when we have at least 3 samples in the sliding window
         while (recentTokenTimesNs.size > 3 && (nowNs - recentTokenTimesNs.first()) > 1_800_000_000L) {
             recentTokenTimesNs.removeFirst()
         }
@@ -131,42 +142,37 @@ class LiveTpsTelemetryTracker(
         val totalElapsedSec = ((nowNs - startTimeNs) / 1_000_000_000.0).toFloat().coerceAtLeast(0.001f)
         val decodeElapsedSec = ((nowNs - firstTokenTimeNs) / 1_000_000_000.0).toFloat()
 
-        // Calculate instantaneous TPS over the sliding window
+        // Calculate instantaneous decode TPS strictly over inter-token timestamps (never mixing prefill time)
         val rawWindowTps = if (recentTokenTimesNs.size >= 2) {
             val windowSpanSec = ((recentTokenTimesNs.last() - recentTokenTimesNs.first()) / 1_000_000_000.0).toFloat()
             val windowTokens = (recentTokenTimesNs.size - 1).toFloat()
-            if (windowSpanSec >= 0.005f) {
-                (windowTokens / windowSpanSec).coerceIn(0.1f, 500f)
+            if (windowSpanSec > 0.0005f) {
+                windowTokens / windowSpanSec
             } else {
-                smoothedInstantTps.takeIf { it > 0f } ?: (1f / totalElapsedSec).coerceIn(0.1f, 200f)
+                smoothedInstantTps
             }
         } else {
-            // First token arrived: estimate initial rate from prefill or total elapsed time
-            (1f / totalElapsedSec).coerceIn(0.1f, 200f)
+            0f
         }
 
-        smoothedInstantTps = if (smoothedInstantTps <= 0f) {
-            rawWindowTps
-        } else {
-            (EMA_ALPHA * rawWindowTps) + ((1f - EMA_ALPHA) * smoothedInstantTps)
-        }
-
-        // Calculate decode TPS strictly excluding TTFT prefill delay once decode phase has progressed
-        val decodeTps = if (tokenCount >= 2 && decodeElapsedSec >= 0.015f) {
-            val pureDecodeRate = ((tokenCount - 1) / decodeElapsedSec).coerceIn(0.1f, 500f)
-            if (tokenCount <= 3) {
-                // Smoothly blend on very early tokens
-                (pureDecodeRate * 0.7f) + (smoothedInstantTps * 0.3f)
+        if (rawWindowTps > 0f) {
+            smoothedInstantTps = if (smoothedInstantTps <= 0f) {
+                rawWindowTps
             } else {
-                pureDecodeRate
+                (EMA_ALPHA * rawWindowTps) + ((1f - EMA_ALPHA) * smoothedInstantTps)
             }
+        }
+
+        // Pure decode TPS strictly excludes prefill TTFT
+        val decodeTps = if (tokenCount >= 2 && decodeElapsedSec > 0.0005f) {
+            (tokenCount - 1) / decodeElapsedSec
         } else {
-            smoothedInstantTps
+            0f
         }
 
         peakTps = max(peakTps, max(smoothedInstantTps, decodeTps))
 
-        if (sparklineSeries.isEmpty() || tokenCount % 1 == 0) {
+        if (smoothedInstantTps > 0f) {
             if (sparklineSeries.size >= MAX_SPARKLINE_POINTS) {
                 sparklineSeries.removeFirst()
             }
@@ -174,28 +180,25 @@ class LiveTpsTelemetryTracker(
         }
 
         val ttftMs = ((firstTokenTimeNs - startTimeNs) / 1_000_000L).toInt().coerceAtLeast(1)
-        val itlMs = if (tokenCount >= 2 && decodeElapsedSec > 0.001f) {
+        val itlMs = if (tokenCount >= 2 && decodeElapsedSec > 0.0005f) {
             (decodeElapsedSec * 1000f) / (tokenCount - 1)
-        } else if (decodeTps > 0f) {
-            1000f / decodeTps
         } else {
             0f
         }
-        val liveEnergy = (totalElapsedSec * estimatedMilliwatts) / 3.6f
 
         return StreamingStep(
             accumulatedText = cleanAccumulatedText,
             currentTps = decodeTps,
             ttftMs = ttftMs,
             generatedTokens = tokenCount,
-            energyMicroWh = liveEnergy,
+            energyMicroWh = computeHardwareEnergyMicroWh(totalElapsedSec),
             citedRagSnippets = citedRagSnippets,
             isFinished = false,
             instantTps = smoothedInstantTps,
             peakTps = peakTps,
             interTokenLatencyMs = itlMs,
             prefillTps = prefillTps,
-            promptTokensEstimate = promptTokensEstimate,
+            promptTokensCount = promptTokensCount,
             phase = InferenceTelemetryPhase.DECODING,
             tpsSeries = sparklineSeries.toList()
         )
@@ -204,26 +207,36 @@ class LiveTpsTelemetryTracker(
     fun buildFinalStep(
         cleanAccumulatedText: String,
         citedRagSnippets: List<RetrievedRagSnippet>,
-        fallbackTokenCount: Int = tokenCount,
+        nativeGeneratedTokenCount: Int? = null,
+        nativePromptTokenCount: Int? = null,
         nativeDecodeTpsOverride: Float? = null,
-        nativePrefillTpsOverride: Float? = null
+        nativePrefillTpsOverride: Float? = null,
+        nativePromptMsOverride: Float? = null,
+        nativeDecodeMsOverride: Float? = null
     ): StreamingStep {
         val nowNs = nanoTimeProvider()
-        val effectiveTokens = if (tokenCount > 0) tokenCount else fallbackTokenCount.coerceAtLeast(0)
+        if (nativePromptTokenCount != null && nativePromptTokenCount > 0) {
+            promptTokensCount = nativePromptTokenCount
+        }
+        val effectiveTokens = when {
+            tokenCount > 0 -> tokenCount
+            nativeGeneratedTokenCount != null && nativeGeneratedTokenCount > 0 -> nativeGeneratedTokenCount
+            else -> 0
+        }
         val totalElapsedSec = ((nowNs - startTimeNs) / 1_000_000_000.0).toFloat().coerceAtLeast(0.001f)
         val decodeEndNs = if (lastTokenTimeNs > firstTokenTimeNs) lastTokenTimeNs else nowNs
         val decodeElapsedSec = if (firstTokenTimeNs > 0L) {
             ((decodeEndNs - firstTokenTimeNs) / 1_000_000_000.0).toFloat()
+        } else if (nativeDecodeMsOverride != null && nativeDecodeMsOverride > 0f) {
+            nativeDecodeMsOverride / 1000f
         } else {
             0f
         }
 
+        // Decode TPS must ONLY reflect token generation, never prefill + decode combined
         val computedDecodeTps = when {
             nativeDecodeTpsOverride != null && nativeDecodeTpsOverride > 0f -> nativeDecodeTpsOverride
-            effectiveTokens >= 2 && decodeElapsedSec >= 0.010f ->
-                ((effectiveTokens - 1) / decodeElapsedSec).coerceIn(0.1f, 500f)
-            effectiveTokens > 0 ->
-                (effectiveTokens / totalElapsedSec).coerceIn(0.1f, 500f)
+            effectiveTokens >= 2 && decodeElapsedSec > 0.0005f -> (effectiveTokens - 1) / decodeElapsedSec
             else -> 0f
         }
 
@@ -231,45 +244,44 @@ class LiveTpsTelemetryTracker(
         val finalPrefillTps = when {
             nativePrefillTpsOverride != null && nativePrefillTpsOverride > 0f -> nativePrefillTpsOverride
             prefillTps > 0f -> prefillTps
-            promptTokensEstimate > 0 && totalElapsedSec > 0f -> (promptTokensEstimate / totalElapsedSec).coerceAtMost(5000f)
+            nativePromptMsOverride != null && nativePromptMsOverride > 0f && promptTokensCount > 0 ->
+                promptTokensCount / (nativePromptMsOverride / 1000f)
             else -> 0f
         }
 
-        val finalTtftMs = if (firstTokenTimeNs > 0L) {
-            ((firstTokenTimeNs - startTimeNs) / 1_000_000L).toInt().coerceAtLeast(1)
-        } else if (effectiveTokens > 0) {
-            (totalElapsedSec * 1000f).toInt().coerceAtLeast(1)
-        } else {
-            0
+        val finalTtftMs = when {
+            firstTokenTimeNs > 0L -> ((firstTokenTimeNs - startTimeNs) / 1_000_000L).toInt().coerceAtLeast(1)
+            nativePromptMsOverride != null && nativePromptMsOverride > 0f -> nativePromptMsOverride.toInt().coerceAtLeast(1)
+            else -> 0
         }
 
-        val finalItlMs = if (effectiveTokens >= 2 && decodeElapsedSec > 0.001f) {
-            (decodeElapsedSec * 1000f) / (effectiveTokens - 1)
-        } else if (computedDecodeTps > 0f) {
-            1000f / computedDecodeTps
-        } else {
-            0f
+        val finalItlMs = when {
+            nativeDecodeMsOverride != null && nativeDecodeMsOverride > 0f && effectiveTokens >= 1 ->
+                nativeDecodeMsOverride / effectiveTokens
+            effectiveTokens >= 2 && decodeElapsedSec > 0.0005f ->
+                (decodeElapsedSec * 1000f) / (effectiveTokens - 1)
+            computedDecodeTps > 0f ->
+                1000f / computedDecodeTps
+            else -> 0f
         }
 
         if (computedDecodeTps > 0f && sparklineSeries.isEmpty()) {
             sparklineSeries.addLast(computedDecodeTps)
         }
 
-        val finalEnergy = (totalElapsedSec * estimatedMilliwatts) / 3.6f
-
         return StreamingStep(
             accumulatedText = cleanAccumulatedText,
             currentTps = computedDecodeTps,
             ttftMs = finalTtftMs,
             generatedTokens = effectiveTokens,
-            energyMicroWh = finalEnergy,
+            energyMicroWh = computeHardwareEnergyMicroWh(totalElapsedSec),
             citedRagSnippets = citedRagSnippets,
             isFinished = true,
             instantTps = computedDecodeTps,
             peakTps = finalPeak,
             interTokenLatencyMs = finalItlMs,
             prefillTps = finalPrefillTps,
-            promptTokensEstimate = promptTokensEstimate,
+            promptTokensCount = promptTokensCount,
             phase = InferenceTelemetryPhase.COMPLETED,
             tpsSeries = sparklineSeries.toList()
         )
@@ -279,22 +291,12 @@ class LiveTpsTelemetryTracker(
         private const val WINDOW_MAX_TOKENS = 12
         private const val MAX_SPARKLINE_POINTS = 36
         private const val EMA_ALPHA = 0.42f
-
-        fun estimatePromptTokens(formattedPrompt: String): Int {
-            if (formattedPrompt.isBlank()) return 0
-            // Standard BPE / SentencePiece approximation (~3.5 chars per token on English + ChatML tags)
-            return (formattedPrompt.length / 3.5f).toInt().coerceAtLeast(1)
-        }
     }
 }
 
 class DeviceTelemetryManager(private val context: Context) {
 
-    fun sampleTelemetry(
-        activeProfileMilliwatts: Int,
-        isGenerating: Boolean,
-        totalSessionTokens: Int
-    ): HardwareTelemetrySnapshot {
+    fun sampleTelemetry(): HardwareTelemetrySnapshot {
         val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
         val stickyIntent = try {
             context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -307,15 +309,15 @@ class DeviceTelemetryManager(private val context: Context) {
         val batteryPct = if (level >= 0 && scale > 0) {
             ((level.toFloat() / scale.toFloat()) * 100f).toInt().coerceIn(0, 100)
         } else {
-            batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 } ?: 0
+            batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 } ?: -1
         }
 
         val status = stickyIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
             status == BatteryManager.BATTERY_STATUS_FULL
 
-        val rawTempTenths = stickyIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
-        val tempC = if (rawTempTenths > 0) rawTempTenths / 10f else 0f
+        val rawTempTenths = stickyIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+        val tempC = if (rawTempTenths > 0) rawTempTenths / 10f else -1f
 
         val voltageMv = stickyIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
             ?.takeIf { it > 0 } ?: 0
@@ -331,10 +333,8 @@ class DeviceTelemetryManager(private val context: Context) {
         val measuredMw = if (hardwareMeasured) {
             val currentMa = abs(safeCurrentNow) / 1000f
             ((currentMa * (voltageMv / 1000f))).toInt()
-        } else if (isGenerating) {
-            activeProfileMilliwatts
         } else {
-            0
+            -1
         }
 
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
@@ -354,12 +354,6 @@ class DeviceTelemetryManager(private val context: Context) {
         val usedRamMb = (totalRamMb - availRamMb).coerceAtLeast(0)
         val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
 
-        val savedCarbonGrams = if (totalSessionTokens > 0) {
-            (totalSessionTokens / 100f) * 0.29f
-        } else {
-            0f
-        }
-
         return HardwareTelemetrySnapshot(
             batteryPercent = batteryPct,
             isCharging = isCharging,
@@ -371,8 +365,7 @@ class DeviceTelemetryManager(private val context: Context) {
             totalRamMb = totalRamMb,
             availableRamMb = availRamMb,
             usedRamMb = usedRamMb,
-            cpuCores = cores,
-            savedCarbonGramsSession = savedCarbonGrams
+            cpuCores = cores
         )
     }
 }

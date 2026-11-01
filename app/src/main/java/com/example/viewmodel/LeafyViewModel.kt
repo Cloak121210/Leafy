@@ -75,7 +75,9 @@ data class StreamingPreviewState(
     val peakTps: Float = liveTps,
     val interTokenLatencyMs: Float = if (liveTps > 0f) 1000f / liveTps else 0f,
     val prefillTps: Float = 0f,
-    val promptTokensEstimate: Int = 0,
+    val promptTokensCount: Int = 0,
+    val runtimeBackendLabel: String = "",
+    val runtimeModelDesc: String = "",
     val phase: InferenceTelemetryPhase = InferenceTelemetryPhase.DECODING,
     val tpsSeries: List<Float> = emptyList()
 )
@@ -103,7 +105,9 @@ data class LeafyUiState(
     val totalSessionTokens: Int = 0,
     val isImportingModel: Boolean = false,
     val importProgress: Float = 0f,
-    val importStatusText: String? = null
+    val importStatusText: String? = null,
+    val mountedModelId: String? = null,
+    val isLoadingModelIntoRam: Boolean = false
 )
 
 class LeafyViewModel(
@@ -140,6 +144,8 @@ class LeafyViewModel(
     private val _isImportingModel = MutableStateFlow(false)
     private val _importProgress = MutableStateFlow(0f)
     private val _importStatusText = MutableStateFlow<String?>(null)
+    private val _mountedModelId = MutableStateFlow<String?>(null)
+    private val _isLoadingModelIntoRam = MutableStateFlow(false)
 
     private var streamingJob: Job? = null
 
@@ -192,9 +198,11 @@ class LeafyViewModel(
 
     private val runtimeSelectionFlow = combine(
         _selectedRuntime,
-        _selectedModelId
-    ) { selectedRuntime, selectedModelId ->
-        selectedRuntime to selectedModelId
+        _selectedModelId,
+        _mountedModelId,
+        _isLoadingModelIntoRam
+    ) { selectedRuntime, selectedModelId, mountedModelId, isLoadingIntoRam ->
+        Quadruple(selectedRuntime, selectedModelId, mountedModelId, isLoadingIntoRam)
     }
 
     private val runtimeOverlayFlow = combine(
@@ -237,6 +245,8 @@ class LeafyViewModel(
 
         val explicitRuntime = selection.first
         val explicitModelId = selection.second
+        val mountedModelId = selection.third
+        val isLoadingIntoRam = selection.fourth
 
         val streaming = overlay.first
         val telemetry = overlay.second
@@ -303,7 +313,9 @@ class LeafyViewModel(
             totalSessionTokens = computedTpsTelemetry.totalSessionTokens,
             isImportingModel = importState.first,
             importProgress = importState.second,
-            importStatusText = importState.third
+            importStatusText = importState.third,
+            mountedModelId = mountedModelId,
+            isLoadingModelIntoRam = isLoadingIntoRam
         )
     }.stateIn(
         scope = viewModelScope,
@@ -332,6 +344,25 @@ class LeafyViewModel(
             scanDeviceForLocalModels(silent = true)
         }
 
+        // Synchronize _mountedModelId with the actual mounted model path in LocalInferenceEngine
+        viewModelScope.launch {
+            combine(
+                inferenceEngine.mountedModelPathFlow,
+                verifiedLocalModelsFlow
+            ) { mountedPath, models ->
+                if (mountedPath.isNullOrBlank()) {
+                    null
+                } else {
+                    models.find {
+                        it.localFilePath == mountedPath ||
+                            File(it.localFilePath).absolutePath == mountedPath
+                    }?.id
+                }
+            }.collect { resolvedMountedId ->
+                _mountedModelId.value = resolvedMountedId
+            }
+        }
+
         // Adaptive hardware telemetry sampler (faster cadence during active token streaming)
         viewModelScope.launch {
             while (isActive) {
@@ -358,7 +389,12 @@ class LeafyViewModel(
             assistantNodes.map { it.ttftMs }.average().toInt()
         } else 0
         val histTotalTokens = assistantNodes.sumOf { it.tokenCount }
-        val histTotalEnergy = assistantNodes.map { it.energyMicroWh.toDouble() }.sum().toFloat()
+        val measuredEnergyNodes = assistantNodes.filter { it.energyMicroWh > 0f }
+        val histTotalEnergy = if (measuredEnergyNodes.isNotEmpty()) {
+            measuredEnergyNodes.map { it.energyMicroWh.toDouble() }.sum().toFloat()
+        } else {
+            -1f
+        }
 
         val effectiveTotalTokens = maxOf(totalSessionTokens, histTotalTokens) + (streaming?.generatedTokens ?: 0)
         val combinedHistory = buildList {
@@ -378,12 +414,12 @@ class LeafyViewModel(
                 sessionSnapshot.sessionAverageTps > 0f -> sessionSnapshot.sessionAverageTps
                 else -> histAvgTps
             }
-            val uWhPerTok = if (streaming.generatedTokens > 0) {
+            val uWhPerTok = if (streaming.generatedTokens > 0 && streaming.energyMicroWh > 0f) {
                 streaming.energyMicroWh / streaming.generatedTokens
             } else {
                 sessionSnapshot.energyPerTokenMicroWh
             }
-            val tokPerMwh = if (uWhPerTok > 0f) 1000f / uWhPerTok else 0f
+            val tokPerMwh = if (uWhPerTok > 0f) 1000f / uWhPerTok else -1f
 
             return TpsTelemetrySnapshot(
                 phase = streaming.phase,
@@ -395,7 +431,7 @@ class LeafyViewModel(
                 lastTtftMs = streaming.ttftMs,
                 averageTtftMs = if (sessionSnapshot.averageTtftMs > 0) sessionSnapshot.averageTtftMs else streaming.ttftMs,
                 interTokenLatencyMs = streaming.interTokenLatencyMs,
-                promptTokensEstimate = streaming.promptTokensEstimate,
+                promptTokensCount = streaming.promptTokensCount,
                 generatedTokens = streaming.generatedTokens,
                 totalSessionTokens = effectiveTotalTokens,
                 energyMicroWh = streaming.energyMicroWh,
@@ -420,9 +456,14 @@ class LeafyViewModel(
         val uWhPerTok = when {
             sessionSnapshot.energyPerTokenMicroWh > 0f -> sessionSnapshot.energyPerTokenMicroWh
             histTotalTokens > 0 && histTotalEnergy > 0f -> histTotalEnergy / histTotalTokens
-            else -> 0f
+            else -> -1f
         }
-        val tokPerMwh = if (uWhPerTok > 0f) 1000f / uWhPerTok else 0f
+        val tokPerMwh = if (uWhPerTok > 0f) 1000f / uWhPerTok else -1f
+        val finalEnergy = when {
+            sessionSnapshot.energyMicroWh > 0f -> sessionSnapshot.energyMicroWh
+            lastNode != null && lastNode.energyMicroWh > 0f -> lastNode.energyMicroWh
+            else -> -1f
+        }
 
         return TpsTelemetrySnapshot(
             phase = if (decodeTps > 0f) InferenceTelemetryPhase.COMPLETED else InferenceTelemetryPhase.IDLE,
@@ -434,10 +475,10 @@ class LeafyViewModel(
             lastTtftMs = lastTtft,
             averageTtftMs = avgTtft,
             interTokenLatencyMs = itlMs,
-            promptTokensEstimate = sessionSnapshot.promptTokensEstimate,
+            promptTokensCount = sessionSnapshot.promptTokensCount,
             generatedTokens = if (sessionSnapshot.generatedTokens > 0) sessionSnapshot.generatedTokens else (lastNode?.tokenCount ?: 0),
             totalSessionTokens = effectiveTotalTokens,
-            energyMicroWh = if (sessionSnapshot.energyMicroWh > 0f) sessionSnapshot.energyMicroWh else (lastNode?.energyMicroWh ?: 0f),
+            energyMicroWh = finalEnergy,
             energyPerTokenMicroWh = uWhPerTok,
             tokensPerMilliwattHour = tokPerMwh,
             tpsHistory = combinedHistory,
@@ -527,10 +568,15 @@ class LeafyViewModel(
         _powerProfile.value = profile
         prefs.edit().putString(KEY_POWER_PROFILE, profile.id).apply()
         if (changed && _streamingPreview.value == null) {
-            inferenceEngine.releaseMountedResources()
+            viewModelScope.launch {
+                inferenceEngine.offloadModelFromRam()
+                _mountedModelId.value = null
+                refreshTelemetry()
+            }
+        } else {
+            refreshTelemetry()
         }
-        refreshTelemetry()
-        showTransientBanner("${profile.displayName} activated (${profile.cpuThreads} threads • ${profile.kvCacheBits})")
+        showTransientBanner("${profile.displayName} activated (${profile.cpuThreads} threads • ${profile.contextLimit} ctx)")
     }
 
     fun selectConversation(conversationId: Long) {
@@ -620,6 +666,7 @@ class LeafyViewModel(
 
             if (uiState.value.activeModel?.id != model.id) {
                 inferenceEngine.releaseMountedResources()
+                _mountedModelId.value = null
             }
 
             setRuntimeAndModelPrefs(runtime = targetRuntime, modelId = model.id)
@@ -636,7 +683,74 @@ class LeafyViewModel(
                     )
                 )
             }
-            showTransientBanner("Mounted ${model.name} (${model.quantization}) on ${targetRuntime.displayName}")
+            showTransientBanner("Selected ${model.name} (${model.quantization}) on ${targetRuntime.displayName}")
+        }
+    }
+
+    /**
+     * Explicitly loads a local model into RAM (PocketPal-style Load button).
+     */
+    fun loadModelIntoRam(model: LocalModelEntity) {
+        if (_isLoadingModelIntoRam.value) return
+        stopStreaming()
+        viewModelScope.launch {
+            _isLoadingModelIntoRam.value = true
+            try {
+                val currentRuntime = uiState.value.activeRuntime
+                val modelDefaultRuntime = AiRuntime.fromId(model.runtimeId)
+                val targetRuntime = if (currentRuntime.isCompatibleWithModel(model) && modelDefaultRuntime == AiRuntime.LLAMA_CPP) {
+                    currentRuntime
+                } else {
+                    modelDefaultRuntime
+                }
+
+                setRuntimeAndModelPrefs(runtime = targetRuntime, modelId = model.id)
+                val currentConv = uiState.value.activeConversation
+                    ?: repository.conversations.first().let { convs ->
+                        convs.find { it.id == _activeConversationId.value } ?: convs.firstOrNull()
+                    }
+                if (currentConv != null) {
+                    repository.updateConversation(
+                        currentConv.copy(
+                            activeModelId = model.id,
+                            activeRuntimeId = targetRuntime.id
+                        )
+                    )
+                }
+
+                val result = inferenceEngine.loadModelIntoRam(
+                    model = model,
+                    runtime = targetRuntime,
+                    powerProfile = uiState.value.powerProfile
+                )
+                result.fold(
+                    onSuccess = { msg ->
+                        _mountedModelId.value = model.id
+                        refreshTelemetry()
+                        showTransientBanner(msg)
+                    },
+                    onFailure = { err ->
+                        _mountedModelId.value = null
+                        refreshTelemetry()
+                        showTransientBanner(err.message ?: "Failed to load '${model.name}' into RAM.")
+                    }
+                )
+            } finally {
+                _isLoadingModelIntoRam.value = false
+            }
+        }
+    }
+
+    /**
+     * Explicitly offloads any loaded model weights and KV cache from RAM (PocketPal-style Offload button).
+     */
+    fun offloadModelFromRam() {
+        stopStreaming()
+        viewModelScope.launch {
+            inferenceEngine.offloadModelFromRam()
+            _mountedModelId.value = null
+            refreshTelemetry()
+            showTransientBanner("Offloaded model weights and KV cache from RAM.")
         }
     }
 
@@ -961,7 +1075,10 @@ class LeafyViewModel(
             var finalPromptTokens = 0
             var finalTtft = 0
             var finalTokens = 0
-            var finalEnergy = 0f
+            var finalEnergy = -1f
+            var finalRuntimeQuant = model.quantization
+            var finalRuntimeBackend = runtime.displayName
+            var finalRuntimeDesc = model.name
             var finalTpsSeries = emptyList<Float>()
             var finalCitations = emptyList<String>()
             var wasCancelled = false
@@ -971,6 +1088,13 @@ class LeafyViewModel(
             var lastPreviewPhase: InferenceTelemetryPhase? = null
 
             try {
+                val initialHw = _telemetry.value
+                val initialHwMw = if (initialHw.isHardwarePowerMeasured && initialHw.instantaneousMilliwatts > 0) {
+                    initialHw.instantaneousMilliwatts.toFloat()
+                } else {
+                    -1f
+                }
+
                 inferenceEngine.streamResponse(
                     userPrompt = promptText,
                     model = model,
@@ -979,7 +1103,8 @@ class LeafyViewModel(
                     persona = persona,
                     pinnedDocs = pinnedDocs,
                     conversationHistory = priorHistory,
-                    branchAttemptIndex = branchAttemptIndex
+                    branchAttemptIndex = branchAttemptIndex,
+                    hardwareMeasuredMilliwatts = initialHwMw
                 ).collect { step ->
                     finalStepText = step.accumulatedText
                     finalTps = step.currentTps
@@ -987,18 +1112,19 @@ class LeafyViewModel(
                     finalPeakTps = maxOf(finalPeakTps, step.peakTps)
                     finalItlMs = step.interTokenLatencyMs
                     if (step.prefillTps > 0f) finalPrefillTps = step.prefillTps
-                    if (step.promptTokensEstimate > 0) finalPromptTokens = step.promptTokensEstimate
+                    if (step.promptTokensCount > 0) finalPromptTokens = step.promptTokensCount
                     finalTtft = step.ttftMs
                     finalTokens = step.generatedTokens
-
-                    // Incorporate real hardware power measurement when available
-                    val hw = _telemetry.value
-                    val adjustedEnergy = if (hw.isHardwarePowerMeasured && hw.instantaneousMilliwatts > 0 && powerProfile.estimatedMilliwatts > 0) {
-                        step.energyMicroWh * (hw.instantaneousMilliwatts.toFloat() / powerProfile.estimatedMilliwatts.toFloat())
-                    } else {
-                        step.energyMicroWh
+                    finalEnergy = step.energyMicroWh
+                    if (step.runtimeQuantizationLabel.isNotBlank()) {
+                        finalRuntimeQuant = step.runtimeQuantizationLabel
                     }
-                    finalEnergy = adjustedEnergy
+                    if (step.runtimeBackendLabel.isNotBlank()) {
+                        finalRuntimeBackend = step.runtimeBackendLabel
+                    }
+                    if (step.runtimeModelDesc.isNotBlank()) {
+                        finalRuntimeDesc = step.runtimeModelDesc
+                    }
                     if (step.tpsSeries.isNotEmpty()) {
                         finalTpsSeries = step.tpsSeries
                     }
@@ -1019,16 +1145,18 @@ class LeafyViewModel(
                             tps = step.currentTps,
                             ttft = step.ttftMs,
                             tokens = step.generatedTokens,
-                            energy = adjustedEnergy,
+                            energy = step.energyMicroWh,
                             citations = finalCitations,
                             runtime = runtime,
-                            modelName = model.name,
-                            quantization = model.quantization,
+                            modelName = finalRuntimeDesc,
+                            quantization = finalRuntimeQuant,
                             instantTps = step.instantTps,
                             peakTps = finalPeakTps,
                             interTokenLatencyMs = step.interTokenLatencyMs,
                             prefillTps = finalPrefillTps,
-                            promptTokensEstimate = finalPromptTokens,
+                            promptTokensCount = finalPromptTokens,
+                            runtimeBackendLabel = finalRuntimeBackend,
+                            runtimeModelDesc = finalRuntimeDesc,
                             phase = step.phase,
                             tpsSeries = finalTpsSeries
                         )
@@ -1064,7 +1192,7 @@ class LeafyViewModel(
                         }
                         val nextHistory = (prev.tpsHistory + (if (finalTpsSeries.isNotEmpty()) finalTpsSeries else listOfNotNull(finalTps.takeIf { it > 0f })))
                             .takeLast(36)
-                        val uWhPerTok = if (finalTokens > 0) finalEnergy / finalTokens else prev.energyPerTokenMicroWh
+                        val uWhPerTok = if (finalTokens > 0 && finalEnergy > 0f) finalEnergy / finalTokens else prev.energyPerTokenMicroWh
                         val tokPerMwh = if (uWhPerTok > 0f) 1000f / uWhPerTok else prev.tokensPerMilliwattHour
 
                         _sessionTpsSnapshot.value = TpsTelemetrySnapshot(
@@ -1077,7 +1205,7 @@ class LeafyViewModel(
                             lastTtftMs = finalTtft,
                             averageTtftMs = nextAvgTtft,
                             interTokenLatencyMs = if (finalItlMs > 0f) finalItlMs else if (finalTps > 0f) 1000f / finalTps else prev.interTokenLatencyMs,
-                            promptTokensEstimate = finalPromptTokens,
+                            promptTokensCount = finalPromptTokens,
                             generatedTokens = finalTokens,
                             totalSessionTokens = _totalSessionTokens.value,
                             energyMicroWh = finalEnergy,
@@ -1088,10 +1216,20 @@ class LeafyViewModel(
                         )
                     }
 
+                    val mountedPath = inferenceEngine.getMountedModelPath()
+                    if (mountedPath != null && mountedPath == File(model.localFilePath).absolutePath) {
+                        _mountedModelId.value = model.id
+                    }
+
                     refreshTelemetry()
 
-                    if (finalTps > 0f) {
-                        repository.updateLocalModel(model.copy(expectedTps = finalTps))
+                    if (finalTps > 0f || finalRuntimeQuant != model.quantization) {
+                        repository.updateLocalModel(
+                            model.copy(
+                                expectedTps = if (finalTps > 0f) finalTps else model.expectedTps,
+                                quantization = finalRuntimeQuant
+                            )
+                        )
                     }
 
                     val contentToPersist = when {
@@ -1117,15 +1255,15 @@ class LeafyViewModel(
                                 role = "ASSISTANT",
                                 content = contentToPersist,
                                 runtimeId = runtime.id,
-                                modelName = model.name,
-                                quantization = model.quantization,
+                                modelName = finalRuntimeDesc,
+                                quantization = finalRuntimeQuant,
                                 powerProfileId = powerProfile.id,
                                 tokensPerSec = finalTps,
                                 ttftMs = finalTtft,
                                 tokenCount = finalTokens,
                                 energyMicroWh = finalEnergy,
                                 citedRagTitles = finalCitations.joinToString("|"),
-                                branchNote = "${runtime.displayName} • ${model.quantization}$noteSuffix"
+                                branchNote = "${runtime.displayName} • $finalRuntimeQuant$noteSuffix"
                             )
                         )
                     }
@@ -1153,7 +1291,9 @@ class LeafyViewModel(
         peakTps: Float = tps,
         interTokenLatencyMs: Float = if (tps > 0f) 1000f / tps else 0f,
         prefillTps: Float = 0f,
-        promptTokensEstimate: Int = 0,
+        promptTokensCount: Int = 0,
+        runtimeBackendLabel: String = "",
+        runtimeModelDesc: String = "",
         phase: InferenceTelemetryPhase = InferenceTelemetryPhase.DECODING,
         tpsSeries: List<Float> = emptyList()
     ) = StreamingPreviewState(
@@ -1171,7 +1311,9 @@ class LeafyViewModel(
         peakTps = peakTps,
         interTokenLatencyMs = interTokenLatencyMs,
         prefillTps = prefillTps,
-        promptTokensEstimate = promptTokensEstimate,
+        promptTokensCount = promptTokensCount,
+        runtimeBackendLabel = runtimeBackendLabel,
+        runtimeModelDesc = runtimeModelDesc,
         phase = phase,
         tpsSeries = tpsSeries
     )
@@ -1184,9 +1326,10 @@ class LeafyViewModel(
 
     fun deleteDownloadedModel(model: LocalModelEntity) {
         viewModelScope.launch {
-            if (uiState.value.activeModel?.id == model.id || _selectedModelId.value == model.id) {
+            if (uiState.value.activeModel?.id == model.id || _selectedModelId.value == model.id || _mountedModelId.value == model.id) {
                 stopStreaming()
                 inferenceEngine.releaseMountedResources()
+                _mountedModelId.value = null
                 setRuntimeAndModelPrefs(runtime = _selectedRuntime.value, modelId = null)
             }
             fileManager.deleteModelFile(model.localFilePath)
@@ -1197,18 +1340,22 @@ class LeafyViewModel(
 
     /**
      * Loads a local model file from a user-selected Android Uri (Storage Access Framework),
-     * copies it into the local engine storage directory, validates its binary header,
-     * and activates it for offline inference.
+     * either keeping it in internal shared storage or copying it into app storage,
+     * validates its binary header, and registers it for offline inference.
      */
-    fun importLocalModelFromUri(uri: Uri?) {
+    fun importLocalModelFromUri(uri: Uri?, copyToAppStorage: Boolean = true) {
         if (uri == null || _isImportingModel.value) return
 
         viewModelScope.launch {
             _isImportingModel.value = true
             _importProgress.value = 0.01f
-            _importStatusText.value = "Reading local model file…"
+            _importStatusText.value = if (copyToAppStorage) {
+                "Copying model file to app storage…"
+            } else {
+                "Verifying model file in internal shared storage…"
+            }
 
-            fileManager.importModelFromUri(uri).collect { status ->
+            fileManager.importModelFromUri(uri, copyToAppStorage = copyToAppStorage).collect { status ->
                 if (status.error != null) {
                     _isImportingModel.value = false
                     _importProgress.value = 0f
@@ -1326,39 +1473,41 @@ class LeafyViewModel(
             return@withContext null
         }
 
+        // Route by real binary header inspection, not filename guessing
         val detectedRuntime = when {
             pteHeader.isValidPte || lower.endsWith(".pte") -> AiRuntime.EXECUTORCH
-            tmacHeader.isValidTmac || lower.endsWith(".tmac") || lower.contains("tmac") || lower.contains("lut") -> AiRuntime.T_MAC
-            lower.contains("bitnet") || lower.contains("1.58") || lower.contains("i2_s") || lower.endsWith(".bitnet") -> AiRuntime.BITNET_CPP
+            tmacHeader.isValidTmac || lower.endsWith(".tmac") -> AiRuntime.T_MAC
+            lower.endsWith(".bitnet") -> AiRuntime.BITNET_CPP
             else -> AiRuntime.LLAMA_CPP
         }
 
+        // Read quantization directly from the parsed file header metadata
         val detectedQuant = when {
-            lower.contains("q8_0") || lower.contains("q8") -> "Q8_0"
-            lower.contains("q6_k") -> "Q6_K"
-            lower.contains("q5_k_m") || lower.contains("q5") -> "Q5_K_M"
-            lower.contains("q4_k_m") -> "Q4_K_M"
-            lower.contains("q4_0") -> "Q4_0"
-            lower.contains("iq4") -> "IQ4_XS"
-            lower.contains("1.58") || lower.contains("i2_s") -> "1.58-bit i2_s"
+            ggufHeader.isValidGguf -> ggufHeader.quantizationLabel
             tmacHeader.isValidTmac -> tmacHeader.formatType
-            pteHeader.isValidPte -> "PTE Flatbuffer"
-            ggufHeader.isValidGguf -> "GGUF v${ggufHeader.version}"
-            else -> detectedRuntime.defaultQuantization
+            pteHeader.isValidPte -> "PTE (${pteHeader.magicString.trim()})"
+            else -> "Unknown"
         }
+
+        val detectedCtxWindow = ggufHeader.contextLength?.takeIf { it in 512..131072 } ?: 4096
 
         val bytes = file.length()
         val sizeMb = (bytes / (1024L * 1024L)).toInt().coerceAtLeast(1)
         val shaHex = precomputedSha.ifBlank { fileManager.computeFileSha256Short(file) }
 
         val headerSummary = when {
-            ggufHeader.isValidGguf -> "Verified GGUF v${ggufHeader.version} • ${ggufHeader.tensorCount} tensors • ${ggufHeader.metadataKvCount} metadata KV pairs"
+            ggufHeader.isValidGguf -> buildString {
+                append("Verified GGUF v${ggufHeader.version}")
+                ggufHeader.architecture?.let { append(" • arch=$it") }
+                append(" • quant=${ggufHeader.quantizationLabel}")
+                append(" • ${ggufHeader.tensorCount} tensors • ${ggufHeader.metadataKvCount} KV pairs")
+            }
             pteHeader.isValidPte -> "Verified ExecuTorch PTE binary (${pteHeader.magicString.trim()}) • ${bytes / 1024} KB"
             tmacHeader.isValidTmac -> "Verified T-MAC ${tmacHeader.formatType} binary • ${tmacHeader.tensorCount} LUT tensors"
             else -> "Local model binary (${file.name}) • ${bytes / 1024} KB"
         }
 
-        val cleanTitle = displayName
+        val cleanTitle = (ggufHeader.modelName?.takeIf { it.isNotBlank() } ?: displayName)
             .removeSuffix(".gguf")
             .removeSuffix(".GGUF")
             .removeSuffix(".pte")
@@ -1373,13 +1522,13 @@ class LeafyViewModel(
         val customModel = LocalModelEntity(
             id = modelId,
             name = cleanTitle,
-            family = "Local Device Storage",
+            family = ggufHeader.architecture ?: "Local Device Storage",
             runtimeId = detectedRuntime.id,
             quantization = detectedQuant,
             parameters = "${sizeMb} MB",
             sizeMb = sizeMb,
             ramRequiredMb = (sizeMb * 1.25f).toInt().coerceAtLeast(64),
-            contextWindow = 4096,
+            contextWindow = detectedCtxWindow,
             expectedTps = 0f,
             ecoRating = 5,
             specialty = "$headerSummary • Path: ${file.name}",
@@ -1482,7 +1631,7 @@ class LeafyViewModel(
     ) {
         val cleanName = name.trim().take(80)
         val cleanSystemPrompt = systemPrompt.trim().take(MAX_PERSONA_PROMPT_CHARS)
-        if (cleanName.isBlank() || cleanSystemPrompt.isBlank()) return
+        if (cleanName.isBlank()) return
         viewModelScope.launch {
             val id = repository.insertPersona(
                 PersonaPresetEntity(
@@ -1538,15 +1687,8 @@ class LeafyViewModel(
     }
 
     fun refreshTelemetry() {
-        val profile = _powerProfile.value
-        val isGen = _streamingPreview.value != null
-        val sessionToks = _totalSessionTokens.value
         viewModelScope.launch(Dispatchers.IO) {
-            _telemetry.value = telemetryManager.sampleTelemetry(
-                activeProfileMilliwatts = profile.estimatedMilliwatts,
-                isGenerating = isGen,
-                totalSessionTokens = sessionToks
-            )
+            _telemetry.value = telemetryManager.sampleTelemetry()
         }
     }
 

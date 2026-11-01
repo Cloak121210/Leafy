@@ -5,7 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Environment
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.system.Os
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -67,11 +69,83 @@ class ModelDownloadManager(private val context: Context) {
     }
 
     /**
-     * Loads a local model file from a user-selected Android Uri (content:// or file://)
-     * into the app's local models directory so native C++ engines (llama.cpp, Bitnet.cpp,
-     * ExecuTorch, T-MAC) can memory-map and read it via POSIX file paths.
+     * Resolves a readable POSIX File in Internal Shared Storage from a SAF or file Uri if accessible.
      */
-    fun importModelFromUri(uri: Uri): Flow<LocalModelLoadStatus> = flow {
+    fun resolveDirectSharedStorageFile(uri: Uri, fallbackDisplayName: String? = null): File? {
+        val candidates = mutableListOf<File>()
+
+        if (uri.scheme == "file" && !uri.path.isNullOrBlank()) {
+            candidates.add(File(uri.path!!))
+        }
+
+        try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                val fdLink = try {
+                    Os.readlink("/proc/self/fd/${pfd.fd}")
+                } catch (_: Throwable) {
+                    try {
+                        File("/proc/self/fd/${pfd.fd}").canonicalPath
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+                if (!fdLink.isNullOrBlank() && !fdLink.startsWith("/proc/")) {
+                    candidates.add(File(fdLink))
+                    if (fdLink.startsWith("/mnt/user/0/emulated/0/")) {
+                        candidates.add(File("/storage/emulated/0/" + fdLink.removePrefix("/mnt/user/0/emulated/0/")))
+                    } else if (fdLink.startsWith("/data/media/0/")) {
+                        candidates.add(File("/storage/emulated/0/" + fdLink.removePrefix("/data/media/0/")))
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+
+        try {
+            if (DocumentsContract.isDocumentUri(context, uri)) {
+                val docId = DocumentsContract.getDocumentId(uri)
+                if (docId.startsWith("raw:")) {
+                    candidates.add(File(docId.removePrefix("raw:")))
+                } else if (docId.startsWith("primary:")) {
+                    val rel = docId.removePrefix("primary:").trimStart('/')
+                    candidates.add(File(Environment.getExternalStorageDirectory(), rel))
+                    candidates.add(File("/storage/emulated/0/$rel"))
+                }
+            }
+        } catch (_: Throwable) {}
+
+        val rawPath = uri.path.orEmpty()
+        if (rawPath.contains("primary:")) {
+            val rel = rawPath.substringAfter("primary:").trimStart('/')
+            try {
+                candidates.add(File(Environment.getExternalStorageDirectory(), rel))
+            } catch (_: Throwable) {}
+            candidates.add(File("/storage/emulated/0/$rel"))
+        }
+
+        if (!fallbackDisplayName.isNullOrBlank()) {
+            try {
+                val dlDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (dlDir != null) {
+                    candidates.add(File(dlDir, fallbackDisplayName))
+                }
+            } catch (_: Throwable) {}
+        }
+
+        return candidates.firstOrNull { f ->
+            try {
+                f.exists() && f.isFile && f.canRead() && f.length() > 0L
+            } catch (_: Throwable) {
+                false
+            }
+        }
+    }
+
+    /**
+     * Loads a local model file from a user-selected Android Uri (content:// or file://).
+     * When [copyToAppStorage] is true, copies the file into the app's local models directory.
+     * When [copyToAppStorage] is false, keeps the model in internal shared storage and references its path in-place.
+     */
+    fun importModelFromUri(uri: Uri, copyToAppStorage: Boolean = true): Flow<LocalModelLoadStatus> = flow {
         var tempFile: File? = null
         try {
             cleanupStaleImportingFiles()
@@ -92,20 +166,22 @@ class ModelDownloadManager(private val context: Context) {
                 if (directFile.exists() && directFile.length() > 0L) {
                     displayName = directFile.name
                     totalBytes = directFile.length()
-                    if (directFile.canRead()) {
-                        val sha = computeFileSha256Short(directFile)
-                        emit(
-                            LocalModelLoadStatus(
-                                displayName = displayName,
-                                progress = 1.0f,
-                                copiedBytes = totalBytes,
-                                totalBytes = totalBytes,
-                                localFilePath = directFile.absolutePath,
-                                sha256Short = sha,
-                                isComplete = true
+                    if (!copyToAppStorage || directFile.absolutePath.startsWith(modelsDir.absolutePath)) {
+                        if (directFile.canRead()) {
+                            val sha = computeFileSha256Short(directFile)
+                            emit(
+                                LocalModelLoadStatus(
+                                    displayName = displayName,
+                                    progress = 1.0f,
+                                    copiedBytes = totalBytes,
+                                    totalBytes = totalBytes,
+                                    localFilePath = directFile.absolutePath,
+                                    sha256Short = sha,
+                                    isComplete = true
+                                )
                             )
-                        )
-                        return@flow
+                            return@flow
+                        }
                     }
                 }
             }
@@ -130,6 +206,39 @@ class ModelDownloadManager(private val context: Context) {
                 val lastSeg = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
                 if (!lastSeg.isNullOrBlank() && lastSeg.contains('.')) {
                     displayName = lastSeg
+                }
+            }
+
+            if (!copyToAppStorage) {
+                val directSharedFile = resolveDirectSharedStorageFile(uri, displayName)
+                if (directSharedFile != null && directSharedFile.exists() && directSharedFile.canRead() && directSharedFile.length() > 0L) {
+                    val fileLen = directSharedFile.length()
+                    val sha = computeFileSha256Short(directSharedFile)
+                    emit(
+                        LocalModelLoadStatus(
+                            displayName = displayName,
+                            progress = 1.0f,
+                            copiedBytes = fileLen,
+                            totalBytes = fileLen,
+                            localFilePath = directSharedFile.absolutePath,
+                            sha256Short = sha,
+                            isComplete = true
+                        )
+                    )
+                    return@flow
+                } else {
+                    emit(
+                        LocalModelLoadStatus(
+                            displayName = displayName,
+                            progress = 0f,
+                            copiedBytes = 0L,
+                            totalBytes = totalBytes,
+                            localFilePath = "",
+                            isComplete = false,
+                            error = "Android Scoped Storage blocks direct C++ POSIX path access to '$displayName' in its current folder. Please choose 'Copy to App Storage' instead."
+                        )
+                    )
+                    return@flow
                 }
             }
 

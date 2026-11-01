@@ -1,12 +1,15 @@
 package com.example.ui.screens
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,9 +20,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -28,6 +35,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -37,12 +45,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.AiRuntime
 import com.example.data.LocalModelEntity
@@ -60,25 +76,130 @@ fun LocalModelsScreen(
     uiState: LeafyUiState,
     onActivateModel: (LocalModelEntity) -> Unit,
     onDeleteLoadedModel: (LocalModelEntity) -> Unit,
-    onImportModelUri: (Uri?) -> Unit,
+    onImportModelUri: (Uri?, Boolean) -> Unit,
     onScanDeviceModels: () -> Unit,
+    onLoadModelIntoRam: (LocalModelEntity) -> Unit = {},
+    onOffloadModelFromRam: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val listState = rememberLazyListState()
+    var pendingSelectedUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingSelectedUri = remember(pendingSelectedUriString) {
+        pendingSelectedUriString?.let { Uri.parse(it) }
+    }
+
     val openDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            onImportModelUri(uri)
+            pendingSelectedUriString = uri.toString()
         }
     }
 
-    LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .testTag("local_models_list"),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    if (pendingSelectedUri != null) {
+        val targetUri = pendingSelectedUri
+        AlertDialog(
+            onDismissRequest = { pendingSelectedUriString = null },
+            title = {
+                Text(
+                    text = "Model Storage Location",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "How would you like Leafy to store this model file?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            pendingSelectedUriString = null
+                            onImportModelUri(targetUri, false)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("keep_in_shared_storage_button")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalAlignment = Alignment.Start
+                        ) {
+                            Text(
+                                text = "Keep in Internal Shared Storage",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Use the model directly from its existing shared storage path without duplicating disk space.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            pendingSelectedUriString = null
+                            onImportModelUri(targetUri, true)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("copy_to_app_storage_button")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalAlignment = Alignment.Start
+                        ) {
+                            Text(
+                                text = "Copy to App Storage",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Copy the model file into Leafy's private app storage folder.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingSelectedUriString = null },
+                    modifier = Modifier.testTag("cancel_model_storage_dialog_button")
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter
     ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 720.dp)
+                .testTag("local_models_list"),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
         // 1. Local Storage File Loader Card
         item {
             Card(
@@ -94,6 +215,7 @@ fun LocalModelsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -103,7 +225,7 @@ fun LocalModelsScreen(
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(26.dp)
                         )
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Load Local Model from Device",
                                 style = MaterialTheme.typography.titleMedium,
@@ -157,11 +279,17 @@ fun LocalModelsScreen(
                             onClick = {
                                 try {
                                     openDocumentLauncher.launch(arrayOf("*/*"))
-                                } catch (_: Exception) {
+                                } catch (e: Exception) {
+                                    Toast.makeText(
+                                        context,
+                                        "System file picker unavailable (${e.javaClass.simpleName}); scanning device models folder instead.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                     onScanDeviceModels()
                                 }
                             },
                             enabled = !uiState.isImportingModel,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("pick_local_model_file_button")
@@ -172,12 +300,17 @@ fun LocalModelsScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Select Model File")
+                            Text(
+                                text = "Select Model File",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
 
                         OutlinedButton(
                             onClick = onScanDeviceModels,
                             enabled = !uiState.isImportingModel,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("scan_device_models_button")
@@ -188,7 +321,11 @@ fun LocalModelsScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Scan Models Folder")
+                            Text(
+                                text = "Scan Models Folder",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
@@ -205,7 +342,12 @@ fun LocalModelsScreen(
                 Text(
                     text = "Loaded Models on Device (${uiState.localModels.size})",
                     style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = "RAM Free: ${uiState.telemetry.availableRamMb} MB",
@@ -262,6 +404,7 @@ fun LocalModelsScreen(
             key = { it.id }
         ) { model ->
             val isActive = uiState.activeModel?.id == model.id
+            val isLoadedInRam = uiState.mountedModelId == model.id
             val runtime = AiRuntime.fromId(model.runtimeId)
             val fitsInRam = uiState.telemetry.totalRamMb <= 0 || model.ramRequiredMb <= uiState.telemetry.totalRamMb
 
@@ -291,27 +434,67 @@ fun LocalModelsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RuntimeBadgePill(runtime = runtime)
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh
+                        Box(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .padding(end = 6.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            RuntimeBadgePill(runtime = runtime)
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = if (isLoadedInRam) {
+                                    MaterialTheme.colorScheme.tertiary
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                }
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = if (isActive) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Text(
-                                    text = if (isActive) "Active Model" else "Verified on Disk",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (isActive) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Memory,
+                                        contentDescription = null,
+                                        tint = if (isLoadedInRam) MaterialTheme.colorScheme.onTertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = if (isLoadedInRam) "In RAM" else "Offloaded",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isLoadedInRam) MaterialTheme.colorScheme.onTertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = if (isActive) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = if (isActive) "Active Model" else "Verified on Disk",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isActive) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         }
                     }
@@ -351,48 +534,177 @@ fun LocalModelsScreen(
                             text = if (model.expectedTps > 0f) {
                                 "Measured: ${"%.1f".format(model.expectedTps)} t/s"
                             } else {
-                                "Speed: Measured on run"
+                                "Decode TPS: not measured"
                             },
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = { onActivateModel(model) },
-                            enabled = !isActive,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("activate_model_${model.id}")
-                        ) {
-                            Icon(
-                                imageVector = if (isActive) Icons.Default.CheckCircle else Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (isActive) "Active in Chat" else "Use This Model")
-                        }
+                    val loadLabel = when {
+                        uiState.isLoadingModelIntoRam && isActive -> "Loading…"
+                        isLoadedInRam -> "Offload"
+                        else -> "Load"
+                    }
+                    val selectLabel = if (isActive) "Selected" else "Select"
 
-                        OutlinedButton(
-                            onClick = { onDeleteLoadedModel(model) },
-                            modifier = Modifier.testTag("delete_model_${model.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.DeleteOutline,
-                                contentDescription = "Remove model",
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Remove")
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        if (maxWidth < 420.dp) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            if (isLoadedInRam) {
+                                                onOffloadModelFromRam()
+                                            } else {
+                                                onLoadModelIntoRam(model)
+                                            }
+                                        },
+                                        enabled = !uiState.isLoadingModelIntoRam,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("toggle_ram_model_${model.id}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Memory,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = loadLabel,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { onActivateModel(model) },
+                                        enabled = !isActive,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("activate_model_${model.id}")
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isActive) Icons.Default.CheckCircle else Icons.Default.PlayArrow,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = selectLabel,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                OutlinedButton(
+                                    onClick = { onDeleteLoadedModel(model) },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("delete_model_${model.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Remove model",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Remove",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        if (isLoadedInRam) {
+                                            onOffloadModelFromRam()
+                                        } else {
+                                            onLoadModelIntoRam(model)
+                                        }
+                                    },
+                                    enabled = !uiState.isLoadingModelIntoRam,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("toggle_ram_model_${model.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Memory,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = loadLabel,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                OutlinedButton(
+                                    onClick = { onActivateModel(model) },
+                                    enabled = !isActive,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("activate_model_${model.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = if (isActive) Icons.Default.CheckCircle else Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = selectLabel,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                OutlinedButton(
+                                    onClick = { onDeleteLoadedModel(model) },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("delete_model_${model.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Remove model",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Remove",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
         }
     }
 }
@@ -407,13 +719,20 @@ fun RuntimesScreen(
     onSelectRuntime: (AiRuntime) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .testTag("runtimes_screen_list"),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    val listState = rememberLazyListState()
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter
     ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 720.dp)
+                .testTag("runtimes_screen_list"),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -443,7 +762,7 @@ fun RuntimesScreen(
                         )
                     }
                     Text(
-                        text = "Select the active native execution backend used to evaluate your loaded local model tensors. All four runtime engines execute 100% offline on device.",
+                        text = "Select the active native execution backend used to evaluate your loaded local model tensors. All runtime engines execute 100% offline on device.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.88f)
                     )
@@ -485,19 +804,30 @@ fun RuntimesScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RuntimeBadgePill(runtime = runtime)
+                        Box(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .padding(end = 8.dp)
+                        ) {
+                            RuntimeBadgePill(runtime = runtime)
+                        }
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = if (isSelected) accent.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceContainerHigh
                         ) {
                             Text(
-                                text = if (isSelected) "● ACTIVE & SELECTED" else "● READY",
+                                text = when {
+                                    isSelected -> "● ACTIVE & SELECTED"
+                                    runtime.hasBundledNativeLibrary -> "● BUNDLED JNI"
+                                    else -> "● NOT BUNDLED"
+                                },
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily,
                                     fontWeight = FontWeight.Bold
                                 ),
-                                color = if (isSelected) accent else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (isSelected) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
                             )
                         }
                     }
@@ -546,6 +876,7 @@ fun RuntimesScreen(
                     }
                 }
             }
+        }
         }
     }
 }

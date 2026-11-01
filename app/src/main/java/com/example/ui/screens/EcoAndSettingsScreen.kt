@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,7 +14,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
@@ -62,53 +65,63 @@ fun EcoAndSettingsScreen(
 ) {
     val telemetry = uiState.telemetry
     val tpsTelemetry = uiState.tpsTelemetry
+    val listState = rememberLazyListState()
 
-    LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .testTag("eco_settings_list"),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter
     ) {
-        // 0. Live TPS & Inference Performance Telemetry Card
-        item {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("live_tps_telemetry_card"),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                ),
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 720.dp)
+                .testTag("eco_settings_list"),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // 0. Live TPS & Inference Performance Telemetry Card
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("live_tps_telemetry_card"),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    ),
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                    )
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Speed,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Live TPS & Inference Telemetry",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Speed,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Live TPS & Inference Telemetry",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         val statusBadgeText = when (tpsTelemetry.phase) {
                             InferenceTelemetryPhase.PREFILLING -> "PREFILLING"
                             InferenceTelemetryPhase.DECODING -> "LIVE STREAM"
@@ -142,20 +155,32 @@ fun EcoAndSettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        val peakLabel = if (tpsTelemetry.sessionPeakTps > 0f) {
+                            "${"%.1f".format(tpsTelemetry.sessionPeakTps)} t/s"
+                        } else {
+                            "not measured"
+                        }
+                        val avgLabel = if (tpsTelemetry.sessionAverageTps > 0f) {
+                            "${"%.1f".format(tpsTelemetry.sessionAverageTps)} t/s"
+                        } else {
+                            "not measured"
+                        }
                         TelemetryMetricBox(
                             title = "Decode Velocity",
-                            value = if (primaryTps > 0f) "${"%.1f".format(primaryTps)} tok/s" else "0.0 tok/s",
-                            subtitle = "Peak ${"%.1f".format(tpsTelemetry.sessionPeakTps)} • Avg ${"%.1f".format(tpsTelemetry.sessionAverageTps)} t/s",
+                            value = if (primaryTps > 0f) "${"%.1f".format(primaryTps)} tok/s" else "not measured",
+                            subtitle = "Peak $peakLabel • Avg $avgLabel",
                             modifier = Modifier.weight(1f)
                         )
+                        val lastTtftLabel = if (tpsTelemetry.lastTtftMs > 0) "${tpsTelemetry.lastTtftMs} ms" else "not measured"
+                        val avgTtftLabel = if (tpsTelemetry.averageTtftMs > 0) "${tpsTelemetry.averageTtftMs} ms" else "not measured"
                         TelemetryMetricBox(
                             title = "Latency & TTFT",
                             value = if (tpsTelemetry.interTokenLatencyMs > 0f) {
                                 "${"%.1f".format(tpsTelemetry.interTokenLatencyMs)} ms/tok"
                             } else {
-                                "— ms/tok"
+                                "not measured"
                             },
-                            subtitle = "TTFT: ${tpsTelemetry.lastTtftMs} ms (Avg ${tpsTelemetry.averageTtftMs} ms)",
+                            subtitle = "TTFT: $lastTtftLabel (Avg $avgTtftLabel)",
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -164,24 +189,36 @@ fun EcoAndSettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        val promptTokLabel = if (tpsTelemetry.promptTokensCount > 0) {
+                            "${tpsTelemetry.promptTokensCount} prompt"
+                        } else {
+                            "prompt not measured"
+                        }
                         TelemetryMetricBox(
                             title = "Prefill & Volume",
                             value = if (tpsTelemetry.prefillTps > 0f) {
                                 "${"%.1f".format(tpsTelemetry.prefillTps)} tok/s"
                             } else {
-                                "${tpsTelemetry.totalSessionTokens} tokens"
+                                "not measured"
                             },
-                            subtitle = "${tpsTelemetry.promptTokensEstimate} prompt • ${tpsTelemetry.totalSessionTokens} session tok",
+                            subtitle = "$promptTokLabel • ${tpsTelemetry.totalSessionTokens} session tok",
                             modifier = Modifier.weight(1f)
                         )
+                        val tokPerMwhLabel = if (tpsTelemetry.tokensPerMilliwattHour > 0f) {
+                            "${"%.0f".format(tpsTelemetry.tokensPerMilliwattHour)} tok/mWh"
+                        } else {
+                            "not measured"
+                        }
                         TelemetryMetricBox(
                             title = "Token Efficiency",
-                            value = if (tpsTelemetry.energyPerTokenMicroWh > 0f) {
-                                "${"%.1f".format(tpsTelemetry.energyPerTokenMicroWh)} µWh/tok"
-                            } else {
-                                "${tpsTelemetry.energyMicroWh} µWh"
+                            value = when {
+                                tpsTelemetry.energyPerTokenMicroWh > 0f ->
+                                    "${"%.1f".format(tpsTelemetry.energyPerTokenMicroWh)} µWh/tok"
+                                tpsTelemetry.energyMicroWh > 0L ->
+                                    "${tpsTelemetry.energyMicroWh} µWh"
+                                else -> "not measured"
                             },
-                            subtitle = "${"%.0f".format(tpsTelemetry.tokensPerMilliwattHour)} tok/mWh • ${tpsTelemetry.completedRunsCount} runs",
+                            subtitle = "$tokPerMwhLabel • ${tpsTelemetry.completedRunsCount} runs",
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -223,7 +260,7 @@ fun EcoAndSettingsScreen(
             }
         }
 
-        // 1. Live Battery, Thermal & Carbon Telemetry Dashboard
+        // 1. Live Battery & Hardware Telemetry Dashboard
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -251,7 +288,7 @@ fun EcoAndSettingsScreen(
                                 tint = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Text(
-                                text = "Live Hardware & Eco Telemetry",
+                                text = "Live Hardware Telemetry",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
@@ -261,7 +298,7 @@ fun EcoAndSettingsScreen(
                             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
                         ) {
                             Text(
-                                text = "CO₂e Saved: ${"%.1f".format(telemetry.savedCarbonGramsSession)}g",
+                                text = if (telemetry.isHardwarePowerMeasured) "Fuel Gauge: Active" else "Power Sensor: Unmeasured",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily,
                                     fontWeight = FontWeight.Bold
@@ -278,14 +315,22 @@ fun EcoAndSettingsScreen(
                     ) {
                         TelemetryMetricBox(
                             title = "Battery Level",
-                            value = "${telemetry.batteryPercent}%",
-                            subtitle = "${telemetry.batteryVoltageMv} mV • ${if (telemetry.isCharging) "Charging" else "Discharging"}",
+                            value = if (telemetry.batteryPercent > 0) "${telemetry.batteryPercent}%" else "not measured",
+                            subtitle = if (telemetry.batteryVoltageMv > 0) {
+                                "${telemetry.batteryVoltageMv} mV • ${if (telemetry.isCharging) "Charging" else "Discharging"}"
+                            } else {
+                                "Voltage: not measured"
+                            },
                             modifier = Modifier.weight(1f)
                         )
                         TelemetryMetricBox(
                             title = "Thermal & Power",
-                            value = "${telemetry.batteryTempCelsius}°C",
-                            subtitle = "~${telemetry.instantaneousMilliwatts} mW draw",
+                            value = if (telemetry.batteryTempCelsius > 0f) "${telemetry.batteryTempCelsius}°C" else "not measured",
+                            subtitle = if (telemetry.isHardwarePowerMeasured && telemetry.instantaneousMilliwatts > 0) {
+                                "${telemetry.instantaneousMilliwatts} mW draw (hardware)"
+                            } else {
+                                "Power draw: not measured"
+                            },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -296,8 +341,12 @@ fun EcoAndSettingsScreen(
                     ) {
                         TelemetryMetricBox(
                             title = "Device Memory",
-                            value = "${telemetry.availableRamMb} MB Free",
-                            subtitle = "${telemetry.usedRamMb} / ${telemetry.totalRamMb} MB used",
+                            value = if (telemetry.availableRamMb > 0) "${telemetry.availableRamMb} MB Free" else "not measured",
+                            subtitle = if (telemetry.totalRamMb > 0) {
+                                "${telemetry.usedRamMb} / ${telemetry.totalRamMb} MB used"
+                            } else {
+                                "RAM: not measured"
+                            },
                             modifier = Modifier.weight(1f)
                         )
                         TelemetryMetricBox(
@@ -329,12 +378,12 @@ fun EcoAndSettingsScreen(
         // 2. Preset Power Profiles (Eco, Balanced, Performance)
         item {
             Text(
-                text = "Preset Power & Thermal Profiles",
+                text = "Preset Thread & Context Profiles",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground
             )
             Text(
-                text = "Tune CPU thread allocation, context length, and KV-cache quantization for long-term battery health.",
+                text = "Configure CPU thread count and context window limit passed to the native inference engine.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -417,7 +466,7 @@ fun EcoAndSettingsScreen(
                             )
 
                             Text(
-                                text = "Threads: ${profile.cpuThreads} • Context Cap: ${profile.contextLimit} tok • KV Cache: ${profile.kvCacheBits} • Est. Draw: ~${profile.estimatedMilliwatts} mW",
+                                text = "Threads: ${profile.cpuThreads} • Context Cap: ${profile.contextLimit} tok",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
@@ -627,6 +676,7 @@ fun EcoAndSettingsScreen(
                     }
                 }
             }
+        }
         }
     }
 }

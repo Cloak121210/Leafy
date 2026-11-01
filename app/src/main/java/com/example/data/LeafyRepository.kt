@@ -17,6 +17,19 @@ class LeafyRepository(private val dao: LeafyDao) {
     suspend fun ensureSeedData() {
         if (dao.countPersonas() == 0) {
             dao.insertPersonas(defaultPersonas())
+        } else {
+            val existing = dao.observePersonas().firstOrNull() ?: emptyList()
+            if (existing.none { it.isBuiltIn && it.name.equals("Blank", ignoreCase = true) }) {
+                val blankPreset = defaultPersonas().firstOrNull { it.name == "Blank" }
+                if (blankPreset != null) {
+                    val safeBlank = if (existing.any { it.id == blankPreset.id }) {
+                        blankPreset.copy(id = 0L)
+                    } else {
+                        blankPreset
+                    }
+                    dao.insertPersona(safeBlank)
+                }
+            }
         }
         // Purge any model entry that does not correspond to a real physical file on disk
         verifyModelFilesOnDisk()
@@ -139,6 +152,17 @@ class LeafyRepository(private val dao: LeafyDao) {
                 temperature = 0.70f,
                 topP = 0.92f,
                 repeatPenalty = 1.08f,
+                isBuiltIn = true
+            ),
+            PersonaPresetEntity(
+                id = 4L,
+                name = "Blank",
+                iconTag = "eco",
+                tagline = "No system prompt • Raw conversation turns",
+                systemPrompt = "",
+                temperature = 0.70f,
+                topP = 0.90f,
+                repeatPenalty = 1.10f,
                 isBuiltIn = true
             )
         )

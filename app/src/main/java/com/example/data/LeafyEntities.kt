@@ -9,54 +9,48 @@ enum class AiRuntime(
     val shortBadge: String,
     val defaultQuantization: String,
     val architectureNote: String,
-    val energyEfficiencyMultiplier: Float,
-    val speedMultiplier: Float,
-    val fileExtensions: List<String>
+    val fileExtensions: List<String>,
+    val hasBundledNativeLibrary: Boolean
 ) {
     LLAMA_CPP(
         id = "llama.cpp",
         displayName = "llama.cpp",
-        shortBadge = "GGUF • NEON",
-        defaultQuantization = "Q4_K_M",
-        architectureNote = "Universal GGUF quantized tensor engine with ARM NEON & Vulkan offload.",
-        energyEfficiencyMultiplier = 1.0f,
-        speedMultiplier = 1.15f,
-        fileExtensions = listOf(".gguf")
+        shortBadge = "GGUF • v0.13",
+        defaultQuantization = "Unknown (read from GGUF)",
+        architectureNote = "GGUF native tensor runtime via bundled librnllama_v8_2_dotprod_i8mm.so / libleafy_runtime_jni.so (llama.rn v0.13.0-rc.9 / llama.cpp 0ec4027a2a, supporting LFM3, LFM2, Qwen3.5, Gemma4).",
+        fileExtensions = listOf(".gguf"),
+        hasBundledNativeLibrary = true
     ),
     BITNET_CPP(
         id = "Bitnet.cpp",
         displayName = "Bitnet.cpp",
-        shortBadge = "1.58-bit • i2_s",
-        defaultQuantization = "1.58-bit Ternary",
-        architectureNote = "1-bit / 1.58-bit ternary weights {-1, 0, +1} eliminating floating-point multiplication for up to 71% lower battery drain.",
-        energyEfficiencyMultiplier = 1.65f,
-        speedMultiplier = 1.45f,
-        fileExtensions = listOf(".gguf", ".bitnet")
+        shortBadge = "1.58-bit • I2_S/TL1",
+        defaultQuantization = "Unknown (read from GGUF)",
+        architectureNote = "1.58-bit ternary weight runtime via bundled libbitnet_llama.so (microsoft/BitNet 0b341e582a + llama.cpp 390c307, ARM NEON I2_S MAD, TL1 LUT & gated squared ReLU).",
+        fileExtensions = listOf(".gguf", ".bitnet"),
+        hasBundledNativeLibrary = true
     ),
     T_MAC(
         id = "T-MAC",
         displayName = "T-MAC",
         shortBadge = "LUT • INT2/4",
-        defaultQuantization = "INT3-LUT",
-        architectureNote = "Lookup-Table (LUT) low-bit matrix multiplication on mobile CPUs without dequantization overhead.",
-        energyEfficiencyMultiplier = 1.50f,
-        speedMultiplier = 1.55f,
-        fileExtensions = listOf(".tmac", ".bin", ".gguf")
+        defaultQuantization = "Unknown (read from header)",
+        architectureNote = "Lookup-Table (LUT) low-bit matrix multiplication runtime via bundled libtmac_llama.so (microsoft/T-MAC 7042f8f733 + llama.cpp eb07ecf, AArch64 NEON vqtbl1q LUT kernels).",
+        fileExtensions = listOf(".gguf", ".tmac", ".bin"),
+        hasBundledNativeLibrary = true
     ),
     EXECUTORCH(
         id = "ExecuTorch",
         displayName = "ExecuTorch",
-        shortBadge = "PTE • XNNPACK",
-        defaultQuantization = "INT4-XNNPACK",
-        architectureNote = "PyTorch edge runtime exporting static .pte graphs to XNNPACK, Qualcomm HTP, and MediaTek NeuroPilot.",
-        energyEfficiencyMultiplier = 1.35f,
-        speedMultiplier = 1.38f,
-        fileExtensions = listOf(".pte")
+        shortBadge = "PTE • JNI",
+        defaultQuantization = "Unknown (read from PTE)",
+        architectureNote = "PyTorch edge runtime loading exported .pte programs via bundled libexecutorch JNI (org.pytorch:executorch-android:1.0.0).",
+        fileExtensions = listOf(".pte"),
+        hasBundledNativeLibrary = true
     );
 
     /**
-     * Checks whether the given on-disk local model can be executed by this runtime engine
-     * without cross-engine spoofing.
+     * Checks whether the given on-disk local model file extension matches this runtime engine.
      */
     fun isCompatibleWithModel(model: LocalModelEntity): Boolean {
         val pathLower = model.localFilePath.lowercase()
@@ -73,8 +67,7 @@ enum class AiRuntime(
     }
 
     /**
-     * Returns true if the model uses native ternary (1.58-bit / i2_s / TQ1 / TQ2) or LUT weights
-     * specifically tailored for Bitnet.cpp or T-MAC.
+     * Returns true if the model header or metadata indicates specialized ternary or LUT weights.
      */
     fun isNativeSpecializedModel(model: LocalModelEntity): Boolean {
         val lowerName = (model.name + " " + model.quantization + " " + model.localFilePath).lowercase()
@@ -108,39 +101,31 @@ enum class PowerProfile(
     val badgeText: String,
     val description: String,
     val cpuThreads: Int,
-    val contextLimit: Int,
-    val kvCacheBits: String,
-    val estimatedMilliwatts: Int
+    val contextLimit: Int
 ) {
     ECO(
         id = "ECO",
         displayName = "Eco Leaf",
         badgeText = "Eco • 2 Threads",
-        description = "Pins execution to efficiency cores, uses INT4 KV-cache quantization, and caps thermal envelope.",
+        description = "Caps native inference thread pool to 2 CPU threads and 2048 context tokens.",
         cpuThreads = 2,
-        contextLimit = 2048,
-        kvCacheBits = "Q4_0 KV",
-        estimatedMilliwatts = 680
+        contextLimit = 2048
     ),
     BALANCED(
         id = "BALANCED",
         displayName = "Balanced Canopy",
         badgeText = "Balanced • 4 Threads",
-        description = "Dynamically scales 4 big.LITTLE threads with Q8_0 KV-cache for responsive sustained local chat.",
+        description = "Allocates 4 CPU threads and up to 4096 context tokens for native inference.",
         cpuThreads = 4,
-        contextLimit = 4096,
-        kvCacheBits = "Q8_0 KV",
-        estimatedMilliwatts = 1240
+        contextLimit = 4096
     ),
     PERFORMANCE(
         id = "PERFORMANCE",
         displayName = "Sunburst Turbo",
         badgeText = "Turbo • 8 Threads",
-        description = "Unlocks 8 performance threads, SIMD/NPU acceleration, and full 8K context window for heavy RAG & coding.",
+        description = "Allocates up to 8 CPU threads and up to 8192 context tokens for native inference.",
         cpuThreads = 8,
-        contextLimit = 8192,
-        kvCacheBits = "FP16 KV",
-        estimatedMilliwatts = 2350
+        contextLimit = 8192
     );
 
     companion object {

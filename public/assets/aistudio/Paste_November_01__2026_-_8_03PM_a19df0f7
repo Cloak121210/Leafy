@@ -1,0 +1,945 @@
+LEAFY v0.9.5 — PASS 1 FINAL IMPLEMENTATION
+
+Verified Android UI Bug Remediation & Quality Assurance
+
+ROLE
+
+Act as a Senior Android Engineer, Jetpack Compose Specialist, UI/UX Systems Developer, and Software Quality Assurance Engineer.
+
+You are now moving from the completed Pass 1 audit and validation stages into actual implementation.
+
+Your task is to fix the verified Android UI defects identified during the reconciled Pass 1 audit of Leafy v0.9.5.
+
+You have access to the existing Android project and its source code.
+
+You must inspect, modify, test, and build the application.
+
+This is an implementation task, not another audit-only exercise.
+
+---
+
+1. IMPLEMENTATION OBJECTIVE
+
+Implement corrections for the following 18 verified unique defects:
+
+Bug ID| Severity| Issue
+P1-001| HIGH| Model-card action buttons wrap and clip
+P1-002| LOW| Markdown blockquote accent bar height
+P1-003| HIGH| Non-scrollable AlertDialog forms
+P1-004| MEDIUM| Fixed chat bubble width and missing adaptive layouts
+P1-005| MEDIUM| Unweighted title and subtitle containers
+P1-006| MEDIUM| Incorrect font-weight resource mapping
+P1-007A| HIGH| Undersized IconButton touch targets
+P1-007B| MEDIUM| Undersized custom top-bar touch targets
+P1-009A| HIGH| UI state loss during tab navigation
+P1-009B| MEDIUM| UI state loss during Activity recreation
+P1-010| MEDIUM| Inconsistent active-navigation indication
+P1-011| LOW| Citation expansion state lost after item disposal
+P1-012| LOW| Missing empty-state handling
+P1-014| MEDIUM| Drawer workspace card content compression
+P1-016| MEDIUM| Non-scrollable ModalBottomSheet content
+P1-018| MEDIUM| WCAG AA color contrast failures
+P1-021| MEDIUM| Chat fails to follow streaming content growth
+P1-025| HIGH| Stale model RAM status after power-profile change
+
+Implementation target: 18 verified unique defects.
+
+Do not count original checklist entries as unique bugs. Some defects affect multiple checklist criteria.
+
+Preserve the Bug IDs throughout the implementation.
+
+---
+
+2. SOURCE-CODE INSPECTION BEFORE MODIFICATION
+
+Before editing anything:
+
+1. Inspect the current project directory.
+2. Verify that the application corresponds to the audited Leafy v0.9.5 codebase.
+3. Inspect the existing Kotlin source files.
+4. Verify that the identified components and functions still exist.
+5. Examine the surrounding code and dependencies.
+6. Check the actual Compose BOM and Material 3 versions.
+7. Check the existing Gradle configuration and test infrastructure.
+8. Identify existing implementations that may already address particular defects.
+
+Primary files involved:
+
+- "MainActivity.kt"
+- "ChatStudioScreen.kt"
+- "ModelsAndRuntimesScreen.kt"
+- "KnowledgeAndPersonasScreen.kt"
+- "EcoAndSettingsScreen.kt"
+- "BotanicalArtComponents.kt"
+- "MarkdownRenderer.kt"
+- "Type.kt"
+- "Color.kt"
+- "Theme.kt"
+- "LeafyViewModel.kt"
+- "LocalInferenceEngine.kt"
+- Relevant font resources.
+- Relevant Gradle and test files.
+
+Do not rely exclusively on the line numbers from the previous report. Locate the actual implementations and verify their current contents.
+
+If the project has already changed, reconcile the differences before modifying it.
+
+---
+
+3. DETAILED IMPLEMENTATION REQUIREMENTS
+
+P1-001 — Fix model-card action button clipping
+
+Location: "ModelsAndRuntimesScreen.kt", approximately lines 491–551.
+
+Problem:
+
+The three-button row containing:
+
+- Load / Offload
+- Select / Selected
+- Remove
+
+has insufficient horizontal space on narrow phones.
+
+On a 360dp-wide screen, the available label space can shrink to approximately 12dp, resulting in character wrapping and clipped button labels.
+
+Required correction:
+
+1. Rework the action-button layout.
+2. Ensure that button labels remain readable.
+3. Prevent unintended character-by-character wrapping.
+4. Preserve all three actions.
+5. Introduce responsive behavior for narrow screens.
+6. Consider equal-width buttons, adaptive stacking, or an appropriate compact action arrangement.
+7. Maintain consistent button heights and spacing.
+
+Do not solve this by simply making the text excessively small.
+
+Acceptance criteria:
+
+- All three actions remain accessible.
+- Labels do not clip.
+- Buttons do not overlap.
+- Layout remains usable at 360dp and narrower widths.
+
+P1-002 — Correct Markdown blockquote accent-bar height
+
+Location: "MarkdownRenderer.kt", BlockQuoteView around line 257.
+
+Problem:
+
+The quote accent bar uses a fixed height of 28dp.
+
+This makes its height inconsistent with multi-line quoted content.
+
+Required correction:
+
+Use an appropriate measurement approach such as:
+
+- "IntrinsicSize.Min" on the parent Row.
+- "fillMaxHeight()" on the accent bar.
+
+Ensure the accent bar tracks the actual height of the complete text block.
+
+Acceptance criteria:
+
+- Single-line quotes render correctly.
+- Multi-line quotes render correctly.
+- No unnecessary clipping or excess vertical spacing.
+- Existing quote styling and colors are preserved.
+
+P1-003 — Fix non-scrollable AlertDialog forms
+
+Locations:
+
+- "KnowledgeAndPersonasScreen.kt:434–559"
+- "ModelsAndRuntimesScreen.kt:87–170"
+
+Problem:
+
+Several AlertDialog bodies contain non-scrollable Column layouts.
+
+On compact screens, landscape orientation, or when the keyboard opens, form fields and sliders can become inaccessible.
+
+Affected interfaces include:
+
+- Add Custom Preset.
+- Add RAG Knowledge Document.
+- Model Storage Location and associated forms.
+
+Required correction:
+
+1. Introduce appropriate vertical scrolling in dialog content.
+2. Use "rememberScrollState()" and "verticalScroll()" where suitable.
+3. Ensure the dialog action buttons remain accessible.
+4. Preserve text-field state while scrolling.
+5. Ensure keyboard interaction does not permanently obscure lower fields.
+6. Retain the existing Material 3 dialog styling.
+
+Do not make the entire screen independently scrollable when only the dialog content needs scrolling.
+
+Acceptance criteria:
+
+- All form fields remain reachable.
+- Sliders can be accessed.
+- Dialog action buttons remain accessible.
+- No content is permanently clipped at short viewport heights.
+
+P1-004 — Make chat bubbles responsive to available width
+
+Location: "ChatStudioScreen.kt", ChatMessageBubble around line 611.
+
+Problem:
+
+The chat bubble has a hardcoded "widthIn(max = 315.dp)" constraint.
+
+The application also lacks adequate adaptive content constraints for expanded screens.
+
+Required correction:
+
+1. Replace the fixed chat bubble width with a responsive constraint.
+2. Consider calculating the maximum bubble width as approximately 82% of the available chat content width.
+3. Introduce an upper bound of approximately 560dp for individual bubbles.
+4. Constrain expanded-screen content columns to a sensible readable width, approximately 720dp.
+5. Preserve appropriate left/right chat alignment.
+6. Ensure Markdown, code blocks and long text remain readable.
+
+Use "BoxWithConstraints" or another appropriate responsive layout mechanism.
+
+Do not stretch chat bubbles across the entire width of a tablet display.
+
+P1-005 — Correct title/subtitle layout compression
+
+Locations:
+
+- "KnowledgeAndPersonasScreen.kt:105–140"
+- "KnowledgeAndPersonasScreen.kt:279–308"
+- "KnowledgeAndPersonasScreen.kt:337–399"
+- "ModelsAndRuntimesScreen.kt:387–447"
+
+Problem:
+
+Several Rows use "Arrangement.SpaceBetween" while their left-side title/subtitle containers do not have appropriate weight constraints.
+
+This allows trailing badges and action buttons to compress or push text beyond its available space.
+
+Required correction:
+
+1. Apply "Modifier.weight(1f)" to the appropriate left-side Row or Column.
+2. Introduce suitable end padding between text and trailing controls.
+3. Use sensible text overflow rules.
+4. Preserve the intended alignment of badges and action buttons.
+
+Acceptance criteria:
+
+- Trailing controls retain their intended space.
+- Long titles do not push actions off-screen.
+- Existing visual hierarchy remains unchanged.
+
+P1-006 — Correct font-weight resource mappings
+
+Location: "Type.kt:11–35" and "app/src/main/res/font/".
+
+Problem:
+
+All four bundled font files:
+
+- comic_neue.ttf
+- jetbrains_mono.ttf
+- nunito.ttf
+- quicksand.ttf
+
+were identified as static Regular fonts with "usWeightClass = 400".
+
+They are being mapped to multiple FontWeight values, including Medium, SemiBold and Bold.
+
+This creates incorrect font-weight mapping and potentially synthetic styling.
+
+Required correction:
+
+1. Inspect available font assets and their licenses.
+2. Locate genuine weight-specific font files for the affected families.
+3. Bundle authentic Medium, SemiBold and Bold variants where available and legally distributable.
+4. Update the corresponding FontFamily definitions.
+5. Map FontWeight values to the correct resource files.
+6. Define actual supported italic variants where available.
+7. Avoid assigning a single regular font file to multiple distinct weights when authentic variants exist.
+
+If authentic font variants are unavailable, do not invent them by duplicating or renaming existing files.
+
+Use a proper platform fallback or a truthful supported-weight mapping until legitimate variants are available.
+
+Do not change Leafy's typography aesthetic unnecessarily.
+
+P1-007A — Correct undersized IconButton touch targets
+
+Locations: "ChatStudioScreen.kt:717, 737, 770, 791, 812".
+
+Problem:
+
+Several Material 3 IconButtons specify an outer "Modifier.size(22.dp)".
+
+Under the audited Compose UI 1.7.0 and Material 3 1.3.0 implementation, this outer constraint can prevent the minimum interactive component size from expanding.
+
+Required correction:
+
+1. Ensure the actual interactive layout bounds are at least 48dp × 48dp.
+2. Keep the visual icon compact using an inner Icon modifier.
+3. Remove restrictive outer dimensions where necessary.
+4. Check horizontal spacing between adjacent controls.
+5. Avoid overlapping interactive regions.
+
+Do not confuse the visual icon size with the clickable component size.
+
+P1-007B — Correct custom circular top-bar touch targets
+
+Locations: "BotanicalArtComponents.kt:270, 358, 379, 399, 430".
+
+Problem:
+
+Custom circular buttons use Surface with ".size(38.dp)" or ".size(42.dp)" and ".clickable()".
+
+These controls do not automatically receive the same minimum interactive component behavior as the relevant Material 3 clickable components.
+
+Required correction:
+
+1. Provide at least 48dp × 48dp interactive bounds.
+2. Preserve the intended 38dp or 42dp visual circular appearance using an inner visual container.
+3. Prefer suitable Material 3 interactive components where practical.
+4. Ensure that the resulting hit regions do not overlap neighboring controls.
+5. Preserve shape, colors, ripple feedback and existing interactions.
+
+Do not enlarge every visual icon unnecessarily.
+
+P1-009A — Preserve UI state across tab navigation
+
+Location: "MainActivity.kt:211–276".
+
+Problem:
+
+Top-level tab navigation uses:
+
+"AnimatedContent(targetState = uiState.currentTab)"
+
+When the outgoing tab's animation finishes, its composition is disposed.
+
+The existing screen-local "remember" states therefore disappear.
+
+Affected state includes:
+
+- Chat prompt draft.
+- Active message editing state.
+- Screen scroll positions.
+- Relevant screen-local dialog and interaction states.
+
+Required correction:
+
+Use an appropriate state-preservation strategy.
+
+Preferred option:
+
+1. Create a "rememberSaveableStateHolder()" outside the "AnimatedContent".
+2. Wrap each tab's content with "SaveableStateProvider(targetTab)".
+3. Preserve the existing AnimatedContent transitions.
+4. Verify that the relevant local saveable states remain associated with their individual tabs.
+
+Alternatively, hoist genuinely application-level state into "LeafyViewModel" where appropriate.
+
+IMPORTANT:
+
+Simply changing individual "remember" calls to "rememberSaveable" is not sufficient to preserve content across disposal of the tab's entire composition.
+
+Preserve state independently for:
+
+- CHAT
+- MODELS
+- RUNTIMES
+- KNOWLEDGE
+- SETTINGS
+
+Do not introduce a new navigation architecture.
+
+P1-009B — Preserve UI state across Activity recreation
+
+Locations:
+
+- "ChatStudioScreen.kt:129–133"
+- "ModelsAndRuntimesScreen.kt:75"
+- "KnowledgeAndPersonasScreen.kt:72–73, 430–432, 486–490"
+
+Problem:
+
+Several screen-local values use "remember" instead of appropriate saveable state.
+
+Rotation and other Activity configuration changes reset:
+
+- Unsent prompt text.
+- Message editing state.
+- Dialog visibility.
+- Selected document URI.
+- Add Custom Preset form state.
+- Add Document form state.
+
+Required correction:
+
+1. Replace appropriate local state with "rememberSaveable".
+2. Preserve text-field contents and relevant form values.
+3. Preserve necessary dialog state.
+4. Preserve selected document information.
+5. For "Uri" values, use a Bundle-saveable representation such as a URI string if required.
+6. Reconstruct URI objects safely.
+7. Ensure restored states do not trigger unintended operations.
+
+Do not persist temporary UI state to Room unnecessarily.
+
+P1-010 — Correct active navigation indication
+
+Locations:
+
+- "BotanicalArtComponents.kt:401"
+- "MainActivity.kt:808–819"
+
+Problem:
+
+The top-bar Settings shortcut and navigation drawer use inconsistent active-destination indications.
+
+Required correction:
+
+1. Make the active navigation destination consistently identifiable.
+2. Update the Canopy Navigation Drawer to indicate the current "LeafyTab".
+3. Use the existing ACTIVE badge or an equivalent existing visual convention.
+4. Ensure the selected destination is represented accurately.
+5. Preserve navigation functionality and the botanical visual language.
+
+Do not change tab navigation behavior.
+
+P1-011 — Preserve citation expansion state
+
+Location: "ChatStudioScreen.kt:593".
+
+Problem:
+
+"showCitations" uses ordinary "remember" state inside a LazyColumn message item.
+
+When the item leaves the active composition window, this state can be discarded.
+
+Required correction:
+
+1. Use an appropriate "rememberSaveable" strategy.
+2. Associate the state with the stable message identity.
+3. Retain the existing LazyColumn item key.
+4. Preserve citation expansion state when scrolling away and returning.
+5. Preserve state through Activity recreation where possible.
+
+Do not allow citation expansion state to leak between different messages.
+
+P1-012 — Add appropriate empty-state handling
+
+Locations:
+
+- "ChatStudioScreen.kt:212"
+- "KnowledgeAndPersonasScreen.kt:193–274"
+
+Problem:
+
+Two empty-data situations have insufficient visual handling.
+
+A. Session history strip:
+
+When "sessions.isEmpty()" and "showHistoryBar == true", the application can display an empty LazyRow without useful explanation.
+
+B. RAG documents:
+
+The RAG Documents section lacks an appropriate empty-state card when no documents are imported.
+
+Required correction:
+
+1. Add a concise session-history empty state.
+2. Add an appropriate RAG document empty-state presentation.
+3. Use the existing iconography and botanical card styling.
+4. Explain what the empty section represents.
+5. Where suitable, show an action directing users to the relevant import or creation workflow.
+6. Ensure empty states disappear automatically when data becomes available.
+
+Do not create redundant empty-state cards if another equivalent state already exists.
+
+P1-014 — Correct DrawerWorkspaceCard layout compression
+
+Location: "MainActivity.kt:921–988".
+
+Problem:
+
+The left-side title/subtitle Row or Column in DrawerWorkspaceCard does not have an appropriate weight.
+
+This can compress trailing status badges.
+
+Required correction:
+
+1. Apply suitable "Modifier.weight(1f)" constraints to the left content.
+2. Preserve the trailing status badges.
+3. Introduce appropriate end spacing.
+4. Ensure long workspace titles do not overlap status indicators.
+
+This correction must remain independent of P1-005, even if the underlying layout principle is similar.
+
+Avoid duplicate or conflicting modifier changes.
+
+P1-016 — Fix non-scrollable ModalBottomSheet content
+
+Locations:
+
+- "MainActivity.kt:279–436"
+- "MainActivity.kt:444–578"
+- "MainActivity.kt:1020–1304"
+
+Affected interfaces:
+
+- Model switcher sheet.
+- Runtime switcher sheet.
+- LeafyPowerModesAndStudioSheet.
+
+Problem:
+
+Root Column content does not scroll when the sheet's content exceeds the available viewport.
+
+This causes inaccessible controls on landscape devices and compact screens.
+
+Required correction:
+
+1. Add appropriate vertical scroll support to each affected sheet.
+2. Consider "verticalScroll(rememberScrollState())" for ordinary content.
+3. Consider LazyColumn for long model/runtime lists.
+4. Preserve ModalBottomSheet behavior.
+5. Ensure nested scrolling works with the bottom-sheet drag gesture.
+6. Ensure bottom action buttons are reachable.
+7. Prevent accidental gesture conflicts.
+
+Do not wrap nested LazyColumn structures in unnecessary additional scroll containers.
+
+Acceptance criteria:
+
+- All sheet content remains accessible.
+- Landscape mode works.
+- Compact-height layouts work.
+- Scrolling and sheet dismissal gestures remain functional.
+
+P1-018 — Correct WCAG AA contrast failures
+
+Locations:
+
+- "Color.kt:50–55"
+- "BotanicalArtComponents.kt:158–185, 194–226"
+- "ModelsAndRuntimesScreen.kt:617–664"
+
+Verified contrast failures:
+
+Color| Background| Current ratio
+RuntimeLlamaCppColor #257D54| Dark surface #15261C| 3.27:1
+RuntimeBitnetColor #157A8C| Dark surface #15261C| 3.22:1
+EcoProfileGreen #22A055| Light tinted pill background| 2.69:1
+
+Required correction:
+
+1. Inspect all usages of the affected semantic colors.
+2. Introduce more appropriate light and dark theme variants.
+3. Maintain the existing botanical palette.
+4. Ensure normal-sized text meets a contrast ratio of at least 4.5:1.
+5. Ensure applicable large text and graphical UI indicators meet their relevant contrast requirements.
+6. Recalculate contrast using actual foreground and background colors.
+7. Avoid changing purely decorative elements without a demonstrated accessibility problem.
+
+Provide a contrast verification table containing the original and corrected values.
+
+Do not claim compliance based on visual approximation.
+
+P1-021 — Correct streaming auto-scroll behavior
+
+Location: "ChatStudioScreen.kt:162–166".
+
+Problem:
+
+The existing chat LazyColumn does not adequately follow the growing assistant response during streaming.
+
+The assistant's last message can continue increasing in height while the viewport remains at an outdated scroll position.
+
+Required correction:
+
+1. Detect updates to the currently streaming assistant message content.
+2. Detect whether the user is already near the bottom of the conversation.
+3. Automatically keep the latest content visible when the user is following the conversation.
+4. Preserve manual reading position when the user intentionally scrolls upward.
+5. Avoid unnecessary scroll animations on every recomposition.
+6. Avoid excessive coroutine launches.
+7. Handle streaming completion cleanly.
+8. Handle large Markdown and code-block responses.
+
+Use an appropriate "LazyListState" strategy and carefully scoped effects.
+
+IMPORTANT:
+
+Never force-scroll users to the bottom when they have deliberately scrolled upward to read older messages.
+
+The behavior must distinguish between:
+
+- User following the latest message.
+- User manually browsing historical messages.
+- Streaming starting.
+- Streaming content growing.
+- Streaming completing.
+
+P1-025 — Synchronize mounted-model state with native resource release
+
+Location: "LeafyViewModel.kt", "selectPowerProfile()" around line 1384.
+
+Problem:
+
+"selectPowerProfile()" calls:
+
+"inferenceEngine.releaseMountedResources()"
+
+However, "_mountedModelId.value" is not reset to null afterward.
+
+This allows the UI to show an incorrect "In RAM" status and Offload action despite native resources having been released.
+
+Required correction:
+
+1. Inspect "selectPowerProfile()".
+2. Inspect "releaseMountedResources()".
+3. Trace mounted model state updates.
+4. Synchronize ViewModel state with actual native resource state.
+5. Ensure the mounted-model identifier is cleared when resources have genuinely been released.
+6. Ensure model-card and quick-switcher statuses reflect the updated state.
+7. Handle failures without falsely reporting successful unloading.
+8. Prevent conflicting asynchronous operations from producing stale state.
+
+Do not simply clear the UI state before confirming that the release operation has completed successfully.
+
+Maintain a single consistent source of truth wherever practical.
+
+---
+
+4. CONDITIONAL FINDINGS: DO NOT IMPLEMENT SPECULATIVELY
+
+The following seven findings remain conditional, partially verified, or dependent on runtime evidence:
+
+Bug ID| Outstanding concern
+P1-013| Horizontal scrolling inside vertically scrolling chat content
+P1-015| Markdown bullet baseline alignment
+P1-017| Rapid repeated action handling
+P1-019| IME-related chat viewport scrolling
+P1-020| Telemetry layout under extreme font scaling
+P1-022| Document-picker fallback error feedback
+P1-024| Rapid repeated Delete Session confirmation
+
+IMPORTANT REPORT INCONSISTENCY:
+
+P1-022 is classified as VERIFIED in one part of the reconciled master index but appears in the potential findings list in the final summary.
+
+Resolve this discrepancy by examining the source code and actual fallback behavior before making any changes.
+
+For all seven findings:
+
+1. Reinspect the implementation.
+2. Determine whether the defect is independently established.
+3. Implement a fix only when evidence supports it.
+4. Otherwise, leave the implementation unchanged.
+5. Record the reason for deferring it.
+
+Do not silently promote conditional findings to verified status.
+
+Do not force all seven into the code changes merely to increase the number of resolved findings.
+
+---
+
+5. EXPLICITLY WITHDRAWN FINDINGS
+
+Two previous audit conclusions must not be reintroduced as defects.
+
+P1-008 — ModalNavigationDrawer Back handling
+
+Classification: FALSE POSITIVE.
+
+Material 3 1.3.0 includes internal drawer Back handling through DrawerPredictiveBackHandler.
+
+The existing implementation already uses the drawer's state-aware Back behavior.
+
+Do not add a redundant BackHandler.
+
+Do not modify this behavior unless the current source demonstrably differs from the audited implementation and an actual defect is found.
+
+P1-023 — Duplicate state-restoration finding
+
+Classification: MERGED INTO P1-009B.
+
+Do not create another independent fix or duplicate report.
+
+---
+
+6. DESIGN AND ARCHITECTURE PRESERVATION
+
+Leafy's existing product identity and core architecture must remain intact.
+
+Preserve:
+
+- Bright botanical visual identity.
+- Existing color language and component styling.
+- Existing navigation architecture.
+- Existing application flows.
+- Existing data models and Room database.
+- Existing inference engine architecture.
+- Existing JNI interfaces.
+- Existing llama.cpp integration.
+- Existing Bitnet.cpp integration.
+- Existing T-MAC integration.
+- Existing ExecuTorch integration.
+- Existing offline-first functionality.
+- Existing local RAG workflows.
+- Existing model import and management workflows.
+- Existing telemetry functionality.
+
+Do not introduce cloud dependencies or external services.
+
+Do not add analytics, telemetry transmission, authentication systems, or unnecessary networking.
+
+Do not remove functionality to make UI tests pass.
+
+Do not perform unrelated refactoring.
+
+Use the smallest maintainable implementation that correctly addresses each defect.
+
+---
+
+7. IMPLEMENTATION QUALITY REQUIREMENTS
+
+The resulting implementation must follow these principles:
+
+A. State correctness
+
+- No accidental state loss.
+- No duplicate state sources.
+- No stale UI state.
+- No unnecessary persistence of temporary UI values.
+- Proper Compose lifecycle handling.
+
+B. Layout correctness
+
+- Responsive constraints.
+- Appropriate minimum interactive bounds.
+- No content clipping.
+- Proper scrolling behavior.
+- Accessibility-aware typography.
+- Consistent spacing.
+
+C. Interaction correctness
+
+- No duplicate actions from unintended repeated clicks.
+- No broken navigation.
+- No inaccessible controls.
+- Correct keyboard interaction.
+- Correct bottom-sheet gestures.
+
+D. Rendering correctness
+
+- Correct typography resources.
+- Consistent semantic colors.
+- Appropriate contrast.
+- No unnecessary recomposition or scrolling.
+- Stable rendering during streaming.
+
+E. Compatibility
+
+Preserve the project's existing:
+
+- minSdk.
+- targetSdk.
+- compileSdk.
+- Gradle and Kotlin versions.
+- Compose dependency versions.
+- NDK configuration.
+- Native runtime integration.
+
+Do not upgrade core dependencies merely to simplify a fix.
+
+---
+
+8. TESTING AND VERIFICATION
+
+After implementation, perform systematic verification.
+
+A. Static verification
+
+Inspect every modified file.
+
+Confirm:
+
+- All referenced composables still exist.
+- All modifier chains are valid.
+- Saveable state keys are stable.
+- No duplicate callbacks were introduced.
+- No conflicting nested scrolling configuration exists.
+- No incorrect font-resource mappings remain.
+- Color contrast calculations are correct.
+- Model mounting state remains synchronized.
+
+B. Automated testing
+
+Run the existing project tests.
+
+At minimum:
+
+"./gradlew :app:testDebugUnitTest"
+
+Also run:
+
+"./gradlew :app:assembleDebug"
+
+Where available, run the relevant instrumentation tests and lint checks.
+
+Add appropriate regression tests for:
+
+- State-preservation helpers.
+- Model RAM status transitions.
+- Empty-state rendering.
+- Streaming scroll decisions.
+- Other critical behavior where the current test infrastructure permits.
+
+Do not weaken or delete existing tests to obtain a passing build.
+
+C. Responsive UI testing
+
+Use available emulators or test configurations.
+
+Test:
+
+Configuration| Required checks
+360dp portrait| Model-card buttons, chat bubbles, touch targets
+Narrow phone| Overflow, buttons and trailing badges
+Landscape| Dialog and bottom-sheet scrolling
+Tablet / expanded width| Chat content constraints
+200% font scale| Text wrapping and component accessibility
+Dark theme| Contrast and semantic colors
+Light theme| Contrast and semantic colors
+Keyboard open| Dialog forms and chat viewport
+Navigation switching| State preservation
+Activity recreation| Draft and dialog restoration
+Streaming generation| Chat tail-follow behavior
+
+If a physical device or emulator is unavailable, clearly mark runtime-only verification as NOT TESTED.
+
+Do not claim that a screenshot, source inspection, or successful compilation proves runtime correctness.
+
+---
+
+9. BUILD AND ARTIFACT REQUIREMENTS
+
+Once the modifications are complete:
+
+1. Run the appropriate Gradle tests.
+2. Build a fresh debug APK.
+3. Confirm that the APK was actually generated.
+4. Verify the application version through BuildConfig or APK metadata.
+5. Record all modified source files.
+6. Record the test results.
+7. Provide the exact artifact location.
+
+Do not fabricate build logs, APK paths, or test results.
+
+Do not change the application version name or version code unless explicitly required by the existing release workflow.
+
+Do not overwrite or delete the original project files unnecessarily.
+
+---
+
+10. FINAL IMPLEMENTATION REPORT
+
+Produce a structured implementation report.
+
+SECTION A — IMPLEMENTATION SUMMARY
+
+- Application version.
+- Total verified defects targeted.
+- Defects successfully corrected.
+- Defects partially corrected.
+- Defects deferred.
+- Important implementation decisions.
+
+SECTION B — BUG RESOLUTION LEDGER
+
+Bug ID| Original Severity| Implementation Status| Files Modified| Verification
+
+Include all 18 verified findings.
+
+Do not silently omit any ID.
+
+SECTION C — SOURCE-CODE CHANGES
+
+For every modified file, explain:
+
+- What changed.
+- Why it changed.
+- Which Bug IDs it addresses.
+- Whether the change affects existing behavior.
+
+SECTION D — TEST RESULTS
+
+Provide:
+
+- Gradle unit-test results.
+- Compilation results.
+- Instrumentation-test results, if executed.
+- UI configuration test results.
+- Known remaining failures.
+- Runtime testing limitations.
+
+SECTION E — CONDITIONAL FINDINGS
+
+Provide a separate section for P1-013, P1-015, P1-017, P1-019, P1-020, P1-022 and P1-024.
+
+Explain whether each was:
+
+- Independently verified and corrected.
+- Still conditional.
+- Deferred pending runtime testing.
+- Determined not to be a defect.
+
+SECTION F — FINAL BUILD
+
+Provide:
+
+- APK filename.
+- Exact generated path.
+- APK build variant.
+- Application version.
+- Build status.
+- Relevant test status.
+
+SECTION G — REMAINING TECHNICAL DEBT
+
+List anything that still requires physical-device testing, further investigation, or additional assets.
+
+Be specific.
+
+---
+
+11. FINAL EXECUTION DIRECTIVE
+
+This is the final implementation stage of Pass 1.
+
+Do not simply produce another audit report.
+
+Do not stop after writing an implementation plan.
+
+Inspect the current project, make the necessary source-code changes, run available tests, build the application, and provide the final implementation report.
+
+Implement all 18 verified defects while protecting the integrity of the existing application.
+
+Do not modify the seven conditional findings without sufficient evidence.
+
+Do not introduce unrelated changes.
+
+Do not sacrifice the existing design or application functionality to achieve superficial fixes.
+
+The objective is a stable, responsive, accessible and functionally correct Leafy application, not merely a successful compilation.
+
+BEGIN PASS 1 FINAL IMPLEMENTATION.

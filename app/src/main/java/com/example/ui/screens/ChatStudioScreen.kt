@@ -14,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -23,13 +24,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
@@ -63,10 +67,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,13 +86,28 @@ import androidx.core.content.ContextCompat
 import com.example.data.AiRuntime
 import com.example.data.MessageNodeEntity
 import com.example.engine.InferenceTelemetryPhase
-import com.example.ui.components.LiveTpsSparklineCanvas
 import com.example.ui.components.MarkdownText
 import com.example.ui.components.runtimeAccentColor
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.viewmodel.BranchedMessageItem
 import com.example.viewmodel.LeafyUiState
 import com.example.viewmodel.StreamingPreviewState
+
+internal fun shouldAutoFollowStreamingTail(
+    totalItemsCount: Int,
+    lastVisibleItemIndex: Int,
+    lastVisibleItemOffset: Int,
+    lastVisibleItemSize: Int,
+    viewportEndOffset: Int,
+    slackPx: Int = 140
+): Boolean {
+    if (totalItemsCount <= 0 || lastVisibleItemIndex < 0) return true
+    if (lastVisibleItemIndex < totalItemsCount - 2) return false
+    if (lastVisibleItemIndex == totalItemsCount - 2) return true
+    val itemBottom = lastVisibleItemOffset + lastVisibleItemSize
+    val distanceToBottom = itemBottom - viewportEndOffset
+    return distanceToBottom <= slackPx
+}
 
 @Composable
 fun ChatStudioScreen(
@@ -104,21 +125,72 @@ fun ChatStudioScreen(
 ) {
     val context = LocalContext.current
     var promptInput by rememberSaveable { mutableStateOf("") }
-    var editingMessageNode by remember { mutableStateOf<MessageNodeEntity?>(null) }
-    var editDraftText by remember { mutableStateOf("") }
+    var editingMessageId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var editDraftText by rememberSaveable { mutableStateOf("") }
+    val editingMessageNode = remember(editingMessageId, uiState.activeBranchMessages) {
+        editingMessageId?.let { targetId ->
+            uiState.activeBranchMessages.find { it.node.id == targetId }?.node
+        }
+    }
 
     val listState = rememberLazyListState()
+    var userAnchoredToTail by rememberSaveable { mutableStateOf(true) }
+    var previousMessageCount by rememberSaveable { mutableIntStateOf(uiState.activeBranchMessages.size) }
+
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
+            Triple(
+                listState.isScrollInProgress,
+                layoutInfo.totalItemsCount,
+                if (lastVisible != null) {
+                    shouldAutoFollowStreamingTail(
+                        totalItemsCount = layoutInfo.totalItemsCount,
+                        lastVisibleItemIndex = lastVisible.index,
+                        lastVisibleItemOffset = lastVisible.offset,
+                        lastVisibleItemSize = lastVisible.size,
+                        viewportEndOffset = layoutInfo.viewportEndOffset
+                    )
+                } else {
+                    true
+                }
+            )
+        }.collect { (isUserScrolling, _, nearBottom) ->
+            if (isUserScrolling) {
+                userAnchoredToTail = nearBottom
+            }
+        }
+    }
 
     val isStreaming = uiState.streamingPreview != null
     LaunchedEffect(uiState.activeBranchMessages.size, isStreaming) {
-        val totalItems = uiState.activeBranchMessages.size + (if (isStreaming) 1 else 0)
-        if (totalItems > 0) {
+        val currentCount = uiState.activeBranchMessages.size
+        val messageAdded = currentCount > previousMessageCount
+        previousMessageCount = currentCount
+        if (messageAdded && !isStreaming) {
+            // If a user prompt was just added, re-anchor to tail
+            val lastRole = uiState.activeBranchMessages.lastOrNull()?.node?.role
+            if (lastRole == "USER") {
+                userAnchoredToTail = true
+            }
+        } else if (isStreaming && messageAdded) {
+            userAnchoredToTail = true
+        }
+
+        val totalItems = listState.layoutInfo.totalItemsCount.takeIf { it > 0 }
+            ?: (currentCount + (if (isStreaming) 1 else 0))
+        if (totalItems > 0 && userAnchoredToTail && !listState.isScrollInProgress) {
             listState.animateScrollToItem(totalItems - 1)
         }
     }
 
-    LaunchedEffect(uiState.streamingPreview?.partialText) {
-        if (uiState.streamingPreview != null && !listState.isScrollInProgress) {
+    LaunchedEffect(
+        uiState.streamingPreview?.partialText?.length,
+        uiState.streamingPreview?.generatedTokens,
+        uiState.streamingPreview?.phase
+    ) {
+        if (uiState.streamingPreview != null && userAnchoredToTail && !listState.isScrollInProgress) {
             val layoutInfo = listState.layoutInfo
             val totalItems = layoutInfo.totalItemsCount
             val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
@@ -128,7 +200,7 @@ fun ChatStudioScreen(
                     if (bottomOverflow > 0) {
                         listState.scrollBy(bottomOverflow.toFloat())
                     }
-                } else if (lastVisible.index >= (totalItems - 2).coerceAtLeast(0)) {
+                } else {
                     listState.scrollToItem(totalItems - 1)
                 }
             }
@@ -163,64 +235,105 @@ fun ChatStudioScreen(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        // Status bar showing active runtime, live TPS readout, persona, pinned RAG count & battery telemetry
-        Box(
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 2.dp),
-            contentAlignment = Alignment.Center
+                .fillMaxSize()
+                .widthIn(max = 720.dp)
         ) {
-            Surface(
+            // Status bar showing active runtime, live TPS readout, persona, pinned RAG count & battery telemetry
+            Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .clickable(onClick = onOpenSpecialMenu)
-                    .testTag("chat_context_whisper_pill"),
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.85f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Surface(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onOpenSpecialMenu)
+                        .testTag("chat_context_whisper_pill"),
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.EnergySavingsLeaf,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(13.dp)
-                    )
-                    val tpsSuffix = when {
-                        uiState.streamingPreview != null && uiState.streamingPreview.phase == InferenceTelemetryPhase.PREFILLING ->
-                            " • PREFILL (${uiState.streamingPreview.ttftMs}ms)"
-                        uiState.streamingPreview != null ->
-                            " • ${"%.1f".format(uiState.streamingPreview.instantTps)} t/s"
-                        uiState.tpsTelemetry.decodeTps > 0f ->
-                            " • ${"%.1f".format(uiState.tpsTelemetry.decodeTps)} t/s"
-                        else -> ""
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.EnergySavingsLeaf,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        val tpsSuffix = when {
+                            uiState.streamingPreview != null && uiState.streamingPreview.phase == InferenceTelemetryPhase.PREFILLING ->
+                                " • PREFILL (${if (uiState.streamingPreview.ttftMs > 0) "${uiState.streamingPreview.ttftMs}ms" else "not measured"})"
+                            uiState.streamingPreview != null && uiState.streamingPreview.instantTps > 0f ->
+                                " • ${"%.1f".format(uiState.streamingPreview.instantTps)} t/s"
+                            uiState.tpsTelemetry.decodeTps > 0f ->
+                                " • ${"%.1f".format(uiState.tpsTelemetry.decodeTps)} t/s"
+                            else -> " • TPS: not measured"
+                        }
+                        val battLabel = if (uiState.telemetry.batteryPercent in 0..100) "${uiState.telemetry.batteryPercent}%" else "not measured"
+                        Text(
+                            text = "${uiState.activeRuntime.displayName}$tpsSuffix • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG pinned • $battLabel",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                    Text(
-                        text = "${uiState.activeRuntime.displayName}$tpsSuffix • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG pinned • ${uiState.telemetry.batteryPercent}%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
             }
-        }
 
-        // Main Chat Canvas
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .testTag("chat_messages_list"),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
+            // Main Chat Canvas
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .testTag("chat_messages_list"),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (uiState.conversations.isEmpty()) {
+                    item(key = "empty_session_history_banner") {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("empty_session_history_banner"),
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.EnergySavingsLeaf,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "No offline conversation threads saved yet. Send a message below to start your first local session.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
             if (uiState.activeModel == null) {
                 item(key = "no_model_warning_banner") {
                     val hasOtherLoadedModels = uiState.localModels.isNotEmpty()
@@ -352,7 +465,7 @@ fun ChatStudioScreen(
                     item = branchedItem,
                     isSpeaking = uiState.speakingMessageId == branchedItem.node.id,
                     onEditClick = {
-                        editingMessageNode = branchedItem.node
+                        editingMessageId = branchedItem.node.id
                         editDraftText = branchedItem.node.content
                     },
                     onRegenerateBranch = { onRegenerateBranch(branchedItem.node) },
@@ -389,24 +502,30 @@ fun ChatStudioScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     IconButton(
                         onClick = onOpenSpecialMenu,
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f))
+                            .size(48.dp)
                             .testTag("composer_special_menu_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Tune,
-                            contentDescription = "Open power mode & persona controls",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = "Open power mode & persona controls",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
 
                     OutlinedTextField(
@@ -455,7 +574,7 @@ fun ChatStudioScreen(
                             }
                         },
                         modifier = Modifier
-                            .size(42.dp)
+                            .size(48.dp)
                             .clip(CircleShape)
                             .testTag("voice_dictation_button")
                     ) {
@@ -475,36 +594,43 @@ fun ChatStudioScreen(
                         },
                         enabled = promptInput.isNotBlank() && uiState.streamingPreview == null,
                         modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (promptInput.isNotBlank() && uiState.streamingPreview == null) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerHigh
-                                }
-                            )
+                            .size(48.dp)
                             .testTag("send_prompt_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send prompt",
-                            tint = if (promptInput.isNotBlank() && uiState.streamingPreview == null) {
-                                MaterialTheme.colorScheme.onPrimary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (promptInput.isNotBlank() && uiState.streamingPreview == null) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send prompt",
+                                tint = if (promptInput.isNotBlank() && uiState.streamingPreview == null) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
             }
+        }
         }
     }
 
     editingMessageNode?.let { targetNode ->
         AlertDialog(
-            onDismissRequest = { editingMessageNode = null },
+            onDismissRequest = { editingMessageId = null },
             title = {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -519,7 +645,10 @@ fun ChatStudioScreen(
                 }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
                         text = "Editing this prompt forks a non-destructive branch using ${uiState.activeRuntime.displayName} (${uiState.activeModel?.name ?: "No model"}).",
                         style = MaterialTheme.typography.bodySmall,
@@ -541,7 +670,7 @@ fun ChatStudioScreen(
                 Button(
                     onClick = {
                         onEditAndBranchMessage(targetNode, editDraftText)
-                        editingMessageNode = null
+                        editingMessageId = null
                     },
                     modifier = Modifier.testTag("confirm_fork_branch_button")
                 ) {
@@ -549,7 +678,7 @@ fun ChatStudioScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { editingMessageNode = null }) {
+                TextButton(onClick = { editingMessageId = null }) {
                     Text("Cancel")
                 }
             }
@@ -572,68 +701,70 @@ private fun BranchedMessageBubble(
     val citedTitles = remember(node.citedRagTitles) {
         node.citedRagTitles.split("|").filter { it.isNotBlank() }
     }
-    var showTelemetryAndRagDetails by remember { mutableStateOf(false) }
+    var showTelemetryAndRagDetails by rememberSaveable(node.id) { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
-    ) {
-        if (item.totalSiblings > 1) {
-            Surface(
-                modifier = Modifier.padding(bottom = 5.dp),
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val bubbleMaxWidth = minOf(maxWidth * 0.85f, 560.dp).coerceAtLeast(240.dp)
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+        ) {
+            if (item.totalSiblings > 1) {
+                Surface(
+                    modifier = Modifier.padding(bottom = 5.dp),
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
                 ) {
-                    IconButton(
-                        onClick = {
-                            val prevIdx = (item.currentSiblingIndex - 1 + item.totalSiblings) % item.totalSiblings
-                            onSwitchBranch(item.siblingIds[prevIdx])
-                        },
-                        modifier = Modifier
-                            .size(22.dp)
-                            .testTag("branch_prev_${node.id}")
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                            contentDescription = "Previous branch",
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(15.dp)
+                        IconButton(
+                            onClick = {
+                                val prevIdx = (item.currentSiblingIndex - 1 + item.totalSiblings) % item.totalSiblings
+                                onSwitchBranch(item.siblingIds[prevIdx])
+                            },
+                            modifier = Modifier
+                                .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                .testTag("branch_prev_${node.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                                contentDescription = "Previous branch",
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                        Text(
+                            text = "${item.currentSiblingIndex + 1}/${item.totalSiblings}" +
+                                if (node.branchNote.isNotBlank()) " • ${node.branchNote}" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            fontWeight = FontWeight.Bold
                         )
-                    }
-                    Text(
-                        text = "${item.currentSiblingIndex + 1}/${item.totalSiblings}" +
-                            if (node.branchNote.isNotBlank()) " • ${node.branchNote}" else "",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        fontWeight = FontWeight.Bold
-                    )
-                    IconButton(
-                        onClick = {
-                            val nextIdx = (item.currentSiblingIndex + 1) % item.totalSiblings
-                            onSwitchBranch(item.siblingIds[nextIdx])
-                        },
-                        modifier = Modifier
-                            .size(22.dp)
-                            .testTag("branch_next_${node.id}")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = "Next branch",
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(15.dp)
-                        )
+                        IconButton(
+                            onClick = {
+                                val nextIdx = (item.currentSiblingIndex + 1) % item.totalSiblings
+                                onSwitchBranch(item.siblingIds[nextIdx])
+                            },
+                            modifier = Modifier
+                                .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                .testTag("branch_next_${node.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = "Next branch",
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        Card(
-            modifier = Modifier.widthIn(max = 540.dp),
+            Card(
+                modifier = Modifier.widthIn(max = bubbleMaxWidth),
             shape = RoundedCornerShape(
                 topStart = 24.dp,
                 topEnd = 24.dp,
@@ -662,8 +793,16 @@ private fun BranchedMessageBubble(
                 )
 
                 AnimatedVisibility(visible = !isUser && showTelemetryAndRagDetails) {
-                    val itlMs = if (node.tokensPerSec > 0f) 1000f / node.tokensPerSec else 0f
-                    val uWhPerTok = if (node.tokenCount > 0) node.energyMicroWh / node.tokenCount else 0f
+                    val decodeLabel = if (node.tokensPerSec > 0f) "${"%.1f".format(node.tokensPerSec)} t/s" else "not measured"
+                    val itlLabel = if (node.tokensPerSec > 0f) "${"%.1f".format(1000f / node.tokensPerSec)} ms/tok" else "not measured"
+                    val ttftLabel = if (node.ttftMs > 0) "${node.ttftMs} ms" else "not measured"
+                    val tokensLabel = if (node.tokenCount > 0) "${node.tokenCount} tok" else "not measured"
+                    val energyLabel = if (node.energyMicroWh > 0f) {
+                        val uWhPerTok = if (node.tokenCount > 0) node.energyMicroWh / node.tokenCount else 0f
+                        "${"%.1f".format(node.energyMicroWh)} µWh (${"%.2f".format(uWhPerTok)} µWh/tok)"
+                    } else {
+                        "not measured"
+                    }
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerLow
@@ -675,7 +814,7 @@ private fun BranchedMessageBubble(
                             verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Text(
-                                text = "Engine: ${runtime.displayName} (${node.quantization}) • Model: ${node.modelName}",
+                                text = "Engine: ${runtime.displayName} (${node.quantization.ifBlank { "not measured" }}) • Model: ${node.modelName.ifBlank { "not measured" }}",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily,
                                     fontWeight = FontWeight.Bold
@@ -683,14 +822,14 @@ private fun BranchedMessageBubble(
                                 color = runtimeAccentColor(runtime)
                             )
                             Text(
-                                text = "Decode: ${"%.1f".format(node.tokensPerSec)} t/s • ITL: ${"%.1f".format(itlMs)} ms/tok • TTFT: ${node.ttftMs} ms",
+                                text = "Decode: $decodeLabel • ITL: $itlLabel • TTFT: $ttftLabel",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Tokens: ${node.tokenCount} tok • Energy: ${"%.1f".format(node.energyMicroWh)} µWh (${"%.2f".format(uWhPerTok)} µWh/tok) • Mode: ${node.powerProfileId}",
+                                text = "Tokens: $tokensLabel • Energy: $energyLabel • Mode: ${node.powerProfileId}",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
@@ -725,9 +864,10 @@ private fun BranchedMessageBubble(
                     ) {
                         Row(
                             modifier = Modifier
+                                .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
                                 .clip(RoundedCornerShape(50))
                                 .clickable(onClick = onEditClick)
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
                                 .testTag("edit_branch_user_${node.id}"),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -753,9 +893,12 @@ private fun BranchedMessageBubble(
                     ) {
                         Row(
                             modifier = Modifier
+                                .weight(1f, fill = false)
+                                .padding(end = 6.dp)
+                                .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
                                 .clip(RoundedCornerShape(50))
                                 .clickable { showTelemetryAndRagDetails = !showTelemetryAndRagDetails }
-                                .padding(vertical = 2.dp),
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
@@ -765,13 +908,21 @@ private fun BranchedMessageBubble(
                                     .clip(CircleShape)
                                     .background(runtimeAccentColor(runtime))
                             )
+                            val nodeTpsText = if (node.tokensPerSec > 0f) {
+                                "${"%.1f".format(node.tokensPerSec)} t/s"
+                            } else {
+                                "not measured"
+                            }
                             Text(
-                                text = "${runtime.displayName} • ${"%.1f".format(node.tokensPerSec)} t/s" +
+                                text = "${runtime.displayName} • $nodeTpsText" +
                                     if (node.tokenCount > 0) " • ${node.tokenCount} tok" else "",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
                             if (citedTitles.isNotEmpty()) {
                                 Icon(
@@ -795,6 +946,7 @@ private fun BranchedMessageBubble(
                         ) {
                             Surface(
                                 modifier = Modifier
+                                    .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
                                     .clip(RoundedCornerShape(50))
                                     .clickable(onClick = onSpeakClick)
                                     .testTag("tts_speak_button_${node.id}"),
@@ -806,7 +958,7 @@ private fun BranchedMessageBubble(
                                 }
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
@@ -827,6 +979,7 @@ private fun BranchedMessageBubble(
 
                             Surface(
                                 modifier = Modifier
+                                    .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
                                     .clip(RoundedCornerShape(50))
                                     .clickable(onClick = onRegenerateBranch)
                                     .testTag("fork_assistant_branch_${node.id}"),
@@ -834,7 +987,7 @@ private fun BranchedMessageBubble(
                                 color = MaterialTheme.colorScheme.surfaceContainer
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
@@ -855,6 +1008,7 @@ private fun BranchedMessageBubble(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -918,11 +1072,20 @@ private fun StreamingAssistantCard(
                         }
                     }
 
+                    val backendTitle = preview.runtimeBackendLabel.ifBlank { preview.runtime.displayName }
+                    val promptTokText = if (preview.promptTokensCount > 0) "${preview.promptTokensCount} prompt tok" else "prompt tok: not measured"
+                    val decodeHeaderText = if (preview.instantTps > 0f || preview.liveTps > 0f) {
+                        val inst = if (preview.instantTps > 0f) "${"%.1f".format(preview.instantTps)} t/s" else "not measured"
+                        val avg = if (preview.liveTps > 0f) "${"%.1f".format(preview.liveTps)} t/s" else "not measured"
+                        "$backendTitle • $inst (Decode: $avg)"
+                    } else {
+                        "$backendTitle • Decode: not measured"
+                    }
                     Text(
                         text = if (isPrefilling) {
-                            "${preview.runtime.displayName} • ~${preview.promptTokensEstimate} prompt tok"
+                            "$backendTitle • $promptTokText"
                         } else {
-                            "${preview.runtime.displayName} • ${"%.1f".format(preview.instantTps)} t/s (Avg ${"%.1f".format(preview.liveTps)} • Peak ${"%.1f".format(preview.peakTps)})"
+                            decodeHeaderText
                         },
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontFamily = JetBrainsMonoFontFamily,
@@ -966,12 +1129,12 @@ private fun StreamingAssistantCard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "TTFT: ${preview.ttftMs} ms",
+                            text = "TTFT: ${if (preview.ttftMs > 0) "${preview.ttftMs} ms" else "not measured"}",
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "ITL: ${"%.1f".format(preview.interTokenLatencyMs)} ms/tok",
+                            text = "ITL: ${if (preview.interTokenLatencyMs > 0f) "${"%.1f".format(preview.interTokenLatencyMs)} ms/tok" else "not measured"}",
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -981,28 +1144,18 @@ private fun StreamingAssistantCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "${"%.1f".format(preview.energyMicroWh)} µWh",
+                            text = if (preview.energyMicroWh > 0f) "${"%.1f".format(preview.energyMicroWh)} µWh" else "Energy: not measured",
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    if (preview.tpsSeries.isNotEmpty()) {
-                        LiveTpsSparklineCanvas(
-                            tpsSeries = preview.tpsSeries,
-                            accentColor = accent,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(34.dp)
-                                .testTag("live_tps_sparkline_canvas")
                         )
                     }
                 }
             }
 
             if (preview.partialText.isBlank() && isPrefilling) {
+                val promptCountLabel = if (preview.promptTokensCount > 0) "${preview.promptTokensCount} native tokens" else "not measured"
                 Text(
-                    text = "Evaluating prompt context (~${preview.promptTokensEstimate} tokens) into ${preview.runtime.displayName} (${preview.quantization}) KV cache…",
+                    text = "Evaluating prompt context ($promptCountLabel) into ${preview.runtimeBackendLabel.ifBlank { preview.runtime.displayName }} (${preview.quantization}) KV cache…",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

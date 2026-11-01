@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.leafy.vkmqxz"
     minSdk = 24
     targetSdk = 36
-    versionCode = 10
-    versionName = "v0.9"
+    versionCode = 16
+    versionName = "v0.9.6"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -67,6 +67,12 @@ android {
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
+  }
+  packaging {
+    jniLibs {
+      useLegacyPackaging = true
+      excludes += setOf("**/armeabi-v7a/**", "**/x86/**")
+    }
   }
 }
 
@@ -143,3 +149,18 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   // "ksp"(libs.moshi.kotlin.codegen)
 }
+
+val builtDebugApkProvider = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk")
+val rootTargetApkFile = rootProject.layout.projectDirectory.file("Leafy-v0.9.6.apk").asFile
+
+tasks.matching { it.name == "packageDebug" }.configureEach {
+  val builtApkProvider = builtDebugApkProvider
+  val targetApk = rootTargetApkFile
+  doLast {
+    val builtApk = builtApkProvider.get().asFile
+    if (builtApk.exists() && builtApk.length() > 0L) {
+      builtApk.copyTo(targetApk, overwrite = true)
+    }
+  }
+}
+

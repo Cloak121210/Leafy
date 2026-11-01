@@ -4,34 +4,40 @@ import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.example.R
 
 val QuicksandFontFamily = FontFamily(
-    Font(R.font.quicksand, FontWeight.Normal),
-    Font(R.font.quicksand, FontWeight.Medium),
-    Font(R.font.quicksand, FontWeight.SemiBold),
-    Font(R.font.quicksand, FontWeight.Bold)
+    Font(R.font.quicksand, FontWeight.Normal, FontStyle.Normal),
+    Font(R.font.quicksand_500, FontWeight.Medium, FontStyle.Normal),
+    Font(R.font.quicksand_600, FontWeight.SemiBold, FontStyle.Normal),
+    Font(R.font.quicksand_700, FontWeight.Bold, FontStyle.Normal)
 )
 
 val NunitoFontFamily = FontFamily(
-    Font(R.font.nunito, FontWeight.Normal),
-    Font(R.font.nunito, FontWeight.Medium),
-    Font(R.font.nunito, FontWeight.SemiBold),
-    Font(R.font.nunito, FontWeight.Bold)
+    Font(R.font.nunito, FontWeight.Normal, FontStyle.Normal),
+    Font(R.font.nunito_400italic, FontWeight.Normal, FontStyle.Italic),
+    Font(R.font.nunito_500, FontWeight.Medium, FontStyle.Normal),
+    Font(R.font.nunito_600, FontWeight.SemiBold, FontStyle.Normal),
+    Font(R.font.nunito_700, FontWeight.Bold, FontStyle.Normal),
+    Font(R.font.nunito_700italic, FontWeight.Bold, FontStyle.Italic)
 )
 
 val ComicSansFontFamily = FontFamily(
-    Font(R.font.comic_neue, FontWeight.Normal),
-    Font(R.font.comic_neue, FontWeight.Medium),
-    Font(R.font.comic_neue, FontWeight.Bold)
+    Font(R.font.comic_neue, FontWeight.Normal, FontStyle.Normal),
+    Font(R.font.comic_neue_400italic, FontWeight.Normal, FontStyle.Italic),
+    Font(R.font.comic_neue_700, FontWeight.Bold, FontStyle.Normal),
+    Font(R.font.comic_neue_700italic, FontWeight.Bold, FontStyle.Italic)
 )
 
 val JetBrainsMonoFontFamily = FontFamily(
-    Font(R.font.jetbrains_mono, FontWeight.Normal),
-    Font(R.font.jetbrains_mono, FontWeight.Medium),
-    Font(R.font.jetbrains_mono, FontWeight.Bold)
+    Font(R.font.jetbrains_mono, FontWeight.Normal, FontStyle.Normal),
+    Font(R.font.jetbrains_mono_400italic, FontWeight.Normal, FontStyle.Italic),
+    Font(R.font.jetbrains_mono_500, FontWeight.Medium, FontStyle.Normal),
+    Font(R.font.jetbrains_mono_600, FontWeight.SemiBold, FontStyle.Normal),
+    Font(R.font.jetbrains_mono_700, FontWeight.Bold, FontStyle.Normal)
 )
 
 fun buildLeafyTypography(useComicSans: Boolean): Typography {

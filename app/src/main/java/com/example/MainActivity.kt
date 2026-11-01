@@ -24,12 +24,15 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -47,6 +50,7 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PersonPin
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -60,16 +64,22 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -134,9 +144,10 @@ fun LeafyAppShell(
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    var showModelSwitcherSheet by remember { mutableStateOf(false) }
-    var showRuntimeSwitcherSheet by remember { mutableStateOf(false) }
-    var showSpecialCommandMenu by remember { mutableStateOf(false) }
+    var showModelSwitcherSheet by rememberSaveable { mutableStateOf(false) }
+    var showRuntimeSwitcherSheet by rememberSaveable { mutableStateOf(false) }
+    var showSpecialCommandMenu by rememberSaveable { mutableStateOf(false) }
+    val saveableStateHolder = rememberSaveableStateHolder()
 
     BackHandler(enabled = uiState.currentTab != LeafyTab.CHAT) {
         viewModel.selectTab(LeafyTab.CHAT)
@@ -201,7 +212,8 @@ fun LeafyAppShell(
                         onOpenSpecialCommandMenu = { showSpecialCommandMenu = true },
                         onOpenSettingsScreen = {
                             viewModel.selectTab(LeafyTab.ECO_SETTINGS)
-                        }
+                        },
+                        isSettingsActive = uiState.currentTab == LeafyTab.ECO_SETTINGS
                     )
                 }
             ) { innerPadding ->
@@ -212,54 +224,58 @@ fun LeafyAppShell(
                         .padding(innerPadding),
                     label = "screen_transition"
                 ) { targetTab ->
-                    when (targetTab) {
-                        LeafyTab.CHAT -> ChatStudioScreen(
-                            uiState = uiState,
-                            onSendPrompt = viewModel::sendUserMessage,
-                            onEditAndBranchMessage = viewModel::editUserMessageAndBranch,
-                            onRegenerateBranch = viewModel::regenerateAssistantBranch,
-                            onSwitchSiblingBranch = viewModel::switchSiblingBranch,
-                            onToggleSpeak = viewModel::toggleSpeakMessage,
-                            onStopStreaming = viewModel::stopStreaming,
-                            onOpenSpecialMenu = { showSpecialCommandMenu = true },
-                            onNavigateToModels = { viewModel.selectTab(LeafyTab.MODELS) },
-                            onOpenRuntimeSwitcher = { showRuntimeSwitcherSheet = true }
-                        )
+                    saveableStateHolder.SaveableStateProvider(targetTab.name) {
+                        when (targetTab) {
+                            LeafyTab.CHAT -> ChatStudioScreen(
+                                uiState = uiState,
+                                onSendPrompt = viewModel::sendUserMessage,
+                                onEditAndBranchMessage = viewModel::editUserMessageAndBranch,
+                                onRegenerateBranch = viewModel::regenerateAssistantBranch,
+                                onSwitchSiblingBranch = viewModel::switchSiblingBranch,
+                                onToggleSpeak = viewModel::toggleSpeakMessage,
+                                onStopStreaming = viewModel::stopStreaming,
+                                onOpenSpecialMenu = { showSpecialCommandMenu = true },
+                                onNavigateToModels = { viewModel.selectTab(LeafyTab.MODELS) },
+                                onOpenRuntimeSwitcher = { showRuntimeSwitcherSheet = true }
+                            )
 
-                        LeafyTab.MODELS -> LocalModelsScreen(
-                            uiState = uiState,
-                            onActivateModel = { model ->
-                                viewModel.switchModelAndRuntime(model)
-                                viewModel.selectTab(LeafyTab.CHAT)
-                            },
-                            onDeleteLoadedModel = viewModel::deleteDownloadedModel,
-                            onImportModelUri = viewModel::importLocalModelFromUri,
-                            onScanDeviceModels = { viewModel.scanDeviceForLocalModels(silent = false) }
-                        )
+                            LeafyTab.MODELS -> LocalModelsScreen(
+                                uiState = uiState,
+                                onActivateModel = { model ->
+                                    viewModel.switchModelAndRuntime(model)
+                                    viewModel.selectTab(LeafyTab.CHAT)
+                                },
+                                onDeleteLoadedModel = viewModel::deleteDownloadedModel,
+                                onImportModelUri = viewModel::importLocalModelFromUri,
+                                onScanDeviceModels = { viewModel.scanDeviceForLocalModels(silent = false) },
+                                onLoadModelIntoRam = viewModel::loadModelIntoRam,
+                                onOffloadModelFromRam = viewModel::offloadModelFromRam
+                            )
 
-                        LeafyTab.RUNTIMES -> RuntimesScreen(
-                            uiState = uiState,
-                            onSelectRuntime = viewModel::switchRuntimeOnly
-                        )
+                            LeafyTab.RUNTIMES -> RuntimesScreen(
+                                uiState = uiState,
+                                onSelectRuntime = viewModel::switchRuntimeOnly
+                            )
 
-                        LeafyTab.KNOWLEDGE -> KnowledgeAndPersonasScreen(
-                            uiState = uiState,
-                            onTogglePinDoc = viewModel::togglePinRagDocument,
-                            onAddRagDoc = viewModel::addRagDocument,
-                            onImportRagUri = viewModel::importRagDocumentFromUri,
-                            onDeleteRagDoc = viewModel::deleteRagDocument,
-                            onSelectPersona = viewModel::selectPersona,
-                            onSaveCustomPersona = viewModel::saveCustomPersona,
-                            onDeleteCustomPersona = viewModel::deleteCustomPersona
-                        )
+                            LeafyTab.KNOWLEDGE -> KnowledgeAndPersonasScreen(
+                                uiState = uiState,
+                                onTogglePinDoc = viewModel::togglePinRagDocument,
+                                onAddRagDoc = viewModel::addRagDocument,
+                                onImportRagUri = viewModel::importRagDocumentFromUri,
+                                onDeleteRagDoc = viewModel::deleteRagDocument,
+                                onSelectPersona = viewModel::selectPersona,
+                                onSaveCustomPersona = viewModel::saveCustomPersona,
+                                onDeleteCustomPersona = viewModel::deleteCustomPersona
+                            )
 
-                        LeafyTab.ECO_SETTINGS -> EcoAndSettingsScreen(
-                            uiState = uiState,
-                            onSelectPowerProfile = viewModel::setPowerProfile,
-                            onSetComicSans = viewModel::setComicSans,
-                            onToggleDarkTheme = viewModel::toggleDarkTheme,
-                            onWipeOfflineData = viewModel::wipeAllOfflineData
-                        )
+                            LeafyTab.ECO_SETTINGS -> EcoAndSettingsScreen(
+                                uiState = uiState,
+                                onSelectPowerProfile = viewModel::setPowerProfile,
+                                onSetComicSans = viewModel::setComicSans,
+                                onToggleDarkTheme = viewModel::toggleDarkTheme,
+                                onWipeOfflineData = viewModel::wipeAllOfflineData
+                            )
+                        }
                     }
                 }
             }
@@ -276,6 +292,7 @@ fun LeafyAppShell(
                 uiState = uiState,
                 onSelectPowerProfile = viewModel::setPowerProfile,
                 onSelectPersona = viewModel::selectPersona,
+                onSaveCustomPersona = viewModel::saveCustomPersona,
                 onToggleComicSans = viewModel::toggleComicSans,
                 onOpenFullScreen = { tab ->
                     showSpecialCommandMenu = false
@@ -291,134 +308,162 @@ fun LeafyAppShell(
             onDismissRequest = { showModelSwitcherSheet = false },
             containerColor = MaterialTheme.colorScheme.surface
         ) {
-            Column(
+            LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Switch Local Model",
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                        Text(
-                            text = "Select a loaded model file on your device",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            showModelSwitcherSheet = false
-                            viewModel.selectTab(LeafyTab.MODELS)
-                        },
-                        modifier = Modifier.testTag("sheet_open_model_hub_button")
+                item(key = "sheet_model_header") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Load Models")
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        ) {
+                            Text(
+                                text = "Switch Local Model",
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                            Text(
+                                text = "Select a model or Load/Offload it in RAM",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                showModelSwitcherSheet = false
+                                viewModel.selectTab(LeafyTab.MODELS)
+                            },
+                            modifier = Modifier.testTag("sheet_open_model_hub_button")
+                        ) {
+                            Text("Models Menu")
+                        }
                     }
                 }
 
                 if (uiState.localModels.isEmpty()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                    item(key = "sheet_no_models_empty") {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                            )
                         ) {
-                            Text(
-                                text = "No local model files loaded yet",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Open the Local Models screen to select a .gguf, .pte, or .tmac file from your device storage.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Button(
-                                onClick = {
-                                    showModelSwitcherSheet = false
-                                    viewModel.selectTab(LeafyTab.MODELS)
-                                },
-                                modifier = Modifier.fillMaxWidth()
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.FolderOpen,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
+                                Text(
+                                    text = "No local model files loaded yet",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
                                 )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Load Local Model File")
+                                Text(
+                                    text = "Open the Local Models screen to select a .gguf, .pte, or .tmac file from your device storage.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Button(
+                                    onClick = {
+                                        showModelSwitcherSheet = false
+                                        viewModel.selectTab(LeafyTab.MODELS)
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FolderOpen,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Load Local Model File")
+                                }
                             }
                         }
                     }
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.height(280.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(
-                            items = uiState.localModels,
-                            key = { "sheet_${it.id}" }
-                        ) { model ->
-                            val isCurrent = uiState.activeModel?.id == model.id
-                            Card(
+                    items(
+                        items = uiState.localModels,
+                        key = { "sheet_${it.id}" }
+                    ) { model ->
+                        val isCurrent = uiState.activeModel?.id == model.id
+                        val isInRam = uiState.mountedModelId == model.id
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.switchModelAndRuntime(model)
+                                    showModelSwitcherSheet = false
+                                }
+                                .testTag("sheet_model_item_${model.id}"),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isCurrent) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerLow
+                                }
+                            ),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                            )
+                        ) {
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
-                                        viewModel.switchModelAndRuntime(model)
-                                        showModelSwitcherSheet = false
-                                    }
-                                    .testTag("sheet_model_item_${model.id}"),
-                                shape = RoundedCornerShape(18.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isCurrent) {
-                                        MaterialTheme.colorScheme.primaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.surfaceContainerLow
-                                    }
-                                ),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                                )
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Row(
+                                Column(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                        .weight(1f)
+                                        .padding(end = 8.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = model.name,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = "${model.quantization} • ${model.sizeMb} MB • Verified on Disk",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontFamily = JetBrainsMonoFontFamily
-                                            ),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
+                                    Text(
+                                        text = model.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${model.quantization} • ${model.sizeMb} MB • ${if (isInRam) "In RAM" else "Offloaded"}",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontFamily = JetBrainsMonoFontFamily
+                                        ),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
 
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            if (isInRam) {
+                                                viewModel.offloadModelFromRam()
+                                            } else {
+                                                viewModel.loadModelIntoRam(model)
+                                            }
+                                        },
+                                        enabled = !uiState.isLoadingModelIntoRam,
+                                        modifier = Modifier.testTag("sheet_toggle_ram_${model.id}")
+                                    ) {
+                                        Text(if (isInRam) "Offload" else "Load")
+                                    }
                                     if (isCurrent) {
                                         Icon(
                                             imageVector = Icons.Default.CheckCircle,
@@ -432,7 +477,9 @@ fun LeafyAppShell(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                item(key = "sheet_model_bottom_spacer") {
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
             }
         }
     }
@@ -446,6 +493,7 @@ fun LeafyAppShell(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -455,7 +503,11 @@ fun LeafyAppShell(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
+                    ) {
                         Text(
                             text = "Inference Runtimes",
                             style = MaterialTheme.typography.titleLarge
@@ -505,7 +557,11 @@ fun LeafyAppShell(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
+                            ) {
                                 RuntimeBadgePill(runtime = runtime)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
@@ -577,6 +633,9 @@ private fun LeafyCanopyNavigationDrawer(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -593,7 +652,7 @@ private fun LeafyCanopyNavigationDrawer(
                                 )
                             }
                         }
-                        Column {
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -601,7 +660,9 @@ private fun LeafyCanopyNavigationDrawer(
                                 Text(
                                     text = "Leafy",
                                     style = MaterialTheme.typography.headlineMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Surface(
                                     shape = RoundedCornerShape(50),
@@ -623,7 +684,9 @@ private fun LeafyCanopyNavigationDrawer(
                             Text(
                                 text = "100% Offline • Sovereign AI",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -650,122 +713,185 @@ private fun LeafyCanopyNavigationDrawer(
                     Text("New Offline Conversation")
                 }
 
-                Text(
-                    text = "WORKSPACES & ENGINES",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                DrawerWorkspaceCard(
-                    icon = Icons.Default.FolderOpen,
-                    title = "Local Models",
-                    subtitle = "${uiState.localModels.size} model(s) loaded from device storage",
-                    onClick = { onNavigateToScreen(LeafyTab.MODELS) },
-                    testTag = "drawer_nav_models"
-                )
-
-                DrawerWorkspaceCard(
-                    icon = Icons.Default.Memory,
-                    title = "Inference Runtimes",
-                    subtitle = "Active: ${uiState.activeRuntime.displayName} (llama.cpp, Bitnet, T-MAC, ExecuTorch)",
-                    onClick = { onNavigateToScreen(LeafyTab.RUNTIMES) },
-                    testTag = "drawer_nav_runtimes"
-                )
-
-                DrawerWorkspaceCard(
-                    icon = Icons.AutoMirrored.Filled.MenuBook,
-                    title = "RAG Knowledge & Personas",
-                    subtitle = "${uiState.pinnedRagDocuments.size} docs pinned • ${uiState.activePersona?.name ?: "Leafy Assistant"}",
-                    onClick = { onNavigateToScreen(LeafyTab.KNOWLEDGE) },
-                    testTag = "drawer_nav_knowledge"
-                )
-
-                DrawerWorkspaceCard(
-                    icon = Icons.Default.Settings,
-                    title = "Power Modes & Telemetry",
-                    subtitle = "${uiState.powerProfile.displayName} • Typography & privacy wipe",
-                    onClick = { onNavigateToScreen(LeafyTab.ECO_SETTINGS) },
-                    testTag = "drawer_nav_eco_settings"
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                Text(
-                    text = "RECENT OFFLINE THREADS",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(
-                        items = uiState.conversations,
-                        key = { "drawer_conv_${it.id}" }
-                    ) { conv ->
-                        val isSelected = uiState.activeConversation?.id == conv.id
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .clickable { onSelectConversation(conv.id) },
-                            shape = RoundedCornerShape(14.dp),
-                            color = if (isSelected) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerLow
-                            }
-                        ) {
-                            Row(
+                    item(key = "drawer_workspaces_header") {
+                        Text(
+                            text = "WORKSPACES & ENGINES",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    item(key = "drawer_workspace_chat") {
+                        DrawerWorkspaceCard(
+                            icon = Icons.Default.ChatBubbleOutline,
+                            title = "Chat Studio",
+                            subtitle = uiState.activeConversation?.title ?: "Active local conversation",
+                            isSelected = uiState.currentTab == LeafyTab.CHAT,
+                            onClick = { onNavigateToScreen(LeafyTab.CHAT) },
+                            testTag = "drawer_nav_chat"
+                        )
+                    }
+
+                    item(key = "drawer_workspace_models") {
+                        DrawerWorkspaceCard(
+                            icon = Icons.Default.FolderOpen,
+                            title = "Local Models",
+                            subtitle = "${uiState.localModels.size} model(s) loaded from device storage",
+                            isSelected = uiState.currentTab == LeafyTab.MODELS,
+                            onClick = { onNavigateToScreen(LeafyTab.MODELS) },
+                            testTag = "drawer_nav_models"
+                        )
+                    }
+
+                    item(key = "drawer_workspace_runtimes") {
+                        DrawerWorkspaceCard(
+                            icon = Icons.Default.Memory,
+                            title = "Inference Runtimes",
+                            subtitle = "Active: ${uiState.activeRuntime.displayName} (llama.cpp, Bitnet, T-MAC, ExecuTorch)",
+                            isSelected = uiState.currentTab == LeafyTab.RUNTIMES,
+                            onClick = { onNavigateToScreen(LeafyTab.RUNTIMES) },
+                            testTag = "drawer_nav_runtimes"
+                        )
+                    }
+
+                    item(key = "drawer_workspace_knowledge") {
+                        DrawerWorkspaceCard(
+                            icon = Icons.AutoMirrored.Filled.MenuBook,
+                            title = "RAG Knowledge & Personas",
+                            subtitle = "${uiState.pinnedRagDocuments.size} docs pinned • ${uiState.activePersona?.name ?: "Leafy Assistant"}",
+                            isSelected = uiState.currentTab == LeafyTab.KNOWLEDGE,
+                            onClick = { onNavigateToScreen(LeafyTab.KNOWLEDGE) },
+                            testTag = "drawer_nav_knowledge"
+                        )
+                    }
+
+                    item(key = "drawer_workspace_eco") {
+                        DrawerWorkspaceCard(
+                            icon = Icons.Default.Settings,
+                            title = "Power Modes & Telemetry",
+                            subtitle = "${uiState.powerProfile.displayName} • Typography & privacy wipe",
+                            isSelected = uiState.currentTab == LeafyTab.ECO_SETTINGS,
+                            onClick = { onNavigateToScreen(LeafyTab.ECO_SETTINGS) },
+                            testTag = "drawer_nav_eco_settings"
+                        )
+                    }
+
+                    item(key = "drawer_threads_divider") {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                            Text(
+                                text = "RECENT OFFLINE THREADS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (uiState.conversations.isEmpty()) {
+                        item(key = "drawer_empty_conversations") {
+                            Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .testTag("empty_conversations_card"),
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = "No saved threads yet",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "Start a prompt in Chat Studio to create your first offline session.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(
+                            items = uiState.conversations,
+                            key = { "drawer_conv_${it.id}" }
+                        ) { conv ->
+                            val isSelected = uiState.activeConversation?.id == conv.id
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable { onSelectConversation(conv.id) },
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerLow
+                                }
                             ) {
                                 Row(
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ChatBubbleOutline,
-                                        contentDescription = null,
-                                        tint = if (isSelected) {
-                                            MaterialTheme.colorScheme.onPrimaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        },
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Column {
-                                        Text(
-                                            text = conv.title,
-                                            style = MaterialTheme.typography.labelLarge,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = if (isSelected) {
-                                                uiState.activeRuntime.displayName
+                                    Row(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(end = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ChatBubbleOutline,
+                                            contentDescription = null,
+                                            tint = if (isSelected) {
+                                                MaterialTheme.colorScheme.onPrimaryContainer
                                             } else {
-                                                AiRuntime.fromId(conv.activeRuntimeId).displayName
+                                                MaterialTheme.colorScheme.onSurfaceVariant
                                             },
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = conv.title,
+                                                style = MaterialTheme.typography.labelLarge,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = if (isSelected) {
+                                                    uiState.activeRuntime.displayName
+                                                } else {
+                                                    AiRuntime.fromId(conv.activeRuntimeId).displayName
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { onDeleteConversation(conv.id) },
+                                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteOutline,
+                                            contentDescription = "Delete conversation",
+                                            modifier = Modifier.size(16.dp)
                                         )
                                     }
-                                }
-                                IconButton(
-                                    onClick = { onDeleteConversation(conv.id) },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.DeleteOutline,
-                                        contentDescription = "Delete conversation",
-                                        modifier = Modifier.size(16.dp)
-                                    )
                                 }
                             }
                         }
@@ -780,15 +906,16 @@ private fun LeafyCanopyNavigationDrawer(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
                         modifier = Modifier
+                            .weight(1f)
                             .clip(RoundedCornerShape(12.dp))
                             .clickable(onClick = onToggleComicSans)
-                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                            .padding(horizontal = 8.dp, vertical = 10.dp)
                             .testTag("drawer_comic_sans_toggle"),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -802,14 +929,16 @@ private fun LeafyCanopyNavigationDrawer(
                         Text(
                             text = if (uiState.useComicSans) "Comic Sans: ON" else "Rounded Sans",
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
                     IconButton(
                         onClick = onToggleDarkTheme,
                         modifier = Modifier
-                            .size(34.dp)
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                             .testTag("drawer_theme_toggle")
                     ) {
                         Icon(
@@ -828,6 +957,7 @@ private fun DrawerWorkspaceCard(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     subtitle: String,
+    isSelected: Boolean = false,
     onClick: () -> Unit,
     testTag: String
 ) {
@@ -838,8 +968,15 @@ private fun DrawerWorkspaceCard(
             .clickable(onClick = onClick)
             .testTag(testTag),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLowest
+        },
+        border = BorderStroke(
+            if (isSelected) 1.5.dp else 1.dp,
+            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+        )
     ) {
         Row(
             modifier = Modifier
@@ -849,28 +986,46 @@ private fun DrawerWorkspaceCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Surface(
                     modifier = Modifier.size(34.dp),
                     shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer
+                    }
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = icon,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            tint = if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            },
                             modifier = Modifier.size(18.dp)
                         )
                     }
                 }
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleSmall
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = subtitle,
@@ -881,11 +1036,36 @@ private fun DrawerWorkspaceCard(
                     )
                 }
             }
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (isSelected) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.primary
+                    ) {
+                        Text(
+                            text = "ACTIVE",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = if (isSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
         }
     }
 }
@@ -900,12 +1080,95 @@ private fun LeafyPowerModesAndStudioSheet(
     uiState: LeafyUiState,
     onSelectPowerProfile: (PowerProfile) -> Unit,
     onSelectPersona: (com.example.data.PersonaPresetEntity) -> Unit,
+    onSaveCustomPersona: (String, String, String, Float, Float) -> Unit,
     onToggleComicSans: () -> Unit,
     onOpenFullScreen: (LeafyTab) -> Unit
 ) {
+    var showAddPresetDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showAddPresetDialog) {
+        var name by rememberSaveable { mutableStateOf("") }
+        var tagline by rememberSaveable { mutableStateOf("") }
+        var systemPrompt by rememberSaveable { mutableStateOf("") }
+        var temperature by rememberSaveable { mutableFloatStateOf(0.65f) }
+        var topP by rememberSaveable { mutableFloatStateOf(0.90f) }
+
+        AlertDialog(
+            onDismissRequest = { showAddPresetDialog = false },
+            title = { Text("Add Custom Preset") },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Preset Name") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("sheet_new_persona_name_input")
+                    )
+                    OutlinedTextField(
+                        value = tagline,
+                        onValueChange = { tagline = it },
+                        label = { Text("Short Tagline") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = systemPrompt,
+                        onValueChange = { systemPrompt = it },
+                        label = { Text("System Prompt (leave empty for blank)") },
+                        minLines = 3,
+                        maxLines = 5,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("sheet_new_persona_prompt_input")
+                    )
+                    Text(
+                        text = "Temperature: ${"%.2f".format(temperature)}",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Slider(
+                        value = temperature,
+                        onValueChange = { temperature = it },
+                        valueRange = 0.1f..1.2f
+                    )
+                    Text(
+                        text = "Top-P: ${"%.2f".format(topP)}",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Slider(
+                        value = topP,
+                        onValueChange = { topP = it },
+                        valueRange = 0.5f..1.0f
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onSaveCustomPersona(name, tagline, systemPrompt, temperature, topP)
+                        showAddPresetDialog = false
+                    },
+                    enabled = name.isNotBlank(),
+                    modifier = Modifier.testTag("sheet_confirm_save_persona_button")
+                ) {
+                    Text("Save & Activate")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddPresetDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
             .padding(horizontal = 18.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -915,7 +1178,11 @@ private fun LeafyPowerModesAndStudioSheet(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp)
+            ) {
                 Text(
                     text = "Power Modes & Studio Controls",
                     style = MaterialTheme.typography.titleLarge
@@ -947,7 +1214,7 @@ private fun LeafyPowerModesAndStudioSheet(
                         uiState.tpsTelemetry.sessionAverageTps > 0f -> uiState.tpsTelemetry.sessionAverageTps
                         else -> 0f
                     }
-                    val tpsPrefix = if (sheetTps > 0f) "${"%.1f".format(sheetTps)} t/s • " else ""
+                    val tpsPrefix = if (sheetTps > 0f) "${"%.1f".format(sheetTps)} t/s • " else "not measured • "
                     Text(
                         text = "$tpsPrefix${uiState.telemetry.batteryPercent}% • ${uiState.telemetry.batteryTempCelsius}°C",
                         style = MaterialTheme.typography.labelSmall.copy(
@@ -997,7 +1264,7 @@ private fun LeafyPowerModesAndStudioSheet(
                                 color = if (selected) accent else MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "${profile.cpuThreads}T • ${profile.kvCacheBits}",
+                                text = "${profile.cpuThreads}T • ${profile.contextLimit} ctx",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
@@ -1061,6 +1328,18 @@ private fun LeafyPowerModesAndStudioSheet(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
                     )
+                    TextButton(
+                        onClick = { showAddPresetDialog = true },
+                        modifier = Modifier.testTag("sheet_add_custom_preset_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Add Custom Preset", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
 
@@ -1121,6 +1400,9 @@ private fun LeafyPowerModesAndStudioSheet(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -1129,7 +1411,7 @@ private fun LeafyPowerModesAndStudioSheet(
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary
                     )
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Playful Comic Sans Font",
                             style = MaterialTheme.typography.titleSmall
