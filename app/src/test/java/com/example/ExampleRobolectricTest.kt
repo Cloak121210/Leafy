@@ -22,8 +22,8 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
         assertEquals("Leafy", appName)
-        assertEquals("v0.9.6", BuildConfig.VERSION_NAME)
-        assertEquals(16, BuildConfig.VERSION_CODE)
+        assertEquals("0.9.7", BuildConfig.VERSION_NAME)
+        assertEquals(18, BuildConfig.VERSION_CODE)
     }
 
     @Test
@@ -771,7 +771,52 @@ class ExampleRobolectricTest {
             assertEquals(null, engine.getMountedModelPath())
         }
     }
+
+    @Test
+    fun `QF1_buildLeafyTypography_enforces_4_tier_weight_hierarchy`() {
+        for (useComic in listOf(false, true)) {
+            val typo = com.example.ui.theme.buildLeafyTypography(useComicSans = useComic)
+            // Level 1: Screen & Hero Titles -> Bold (700)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Bold, typo.displayLarge.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Bold, typo.displayMedium.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Bold, typo.headlineLarge.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Bold, typo.titleLarge.fontWeight)
+
+            // Level 2: Section & Card Headings -> SemiBold (600)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.SemiBold, typo.headlineMedium.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.SemiBold, typo.titleMedium.fontWeight)
+
+            // Level 3: Sub-headings, Item Titles & Primary Actions -> Medium (500)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Medium, typo.titleSmall.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Medium, typo.labelLarge.fontWeight)
+
+            // Level 4: Badges, Telemetry & Body Copy -> Medium (500) / Normal (400)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Medium, typo.labelMedium.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Normal, typo.labelSmall.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Normal, typo.bodyLarge.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Normal, typo.bodyMedium.fontWeight)
+            assertEquals(androidx.compose.ui.text.font.FontWeight.Normal, typo.bodySmall.fontWeight)
+
+            // Verify compact line heights and disabled font padding for vertical space efficiency
+            assertTrue("titleLarge lineHeight must be compact (<= 20.sp)", typo.titleLarge.lineHeight.value <= 20.5f)
+            assertTrue("bodyMedium lineHeight must be compact (<= 17.sp)", typo.bodyMedium.lineHeight.value <= 17.0f)
+            assertEquals(false, typo.bodyMedium.platformStyle?.paragraphStyle?.includeFontPadding)
+        }
+
+        // Verify useGradientText attaches a living multi-stop gradient Brush to important heading styles
+        val gradTypo = com.example.ui.theme.buildLeafyTypography(
+            useComicSans = false,
+            useGradientText = true,
+            isDarkTheme = false
+        )
+        assertTrue("displayLarge should have gradient brush when useGradientText=true", gradTypo.displayLarge.brush != null)
+        assertTrue("headlineLarge should have gradient brush when useGradientText=true", gradTypo.headlineLarge.brush != null)
+        assertTrue("titleLarge should have gradient brush when useGradientText=true", gradTypo.titleLarge.brush != null)
+        assertTrue("titleMedium should have gradient brush when useGradientText=true", gradTypo.titleMedium.brush != null)
+        assertEquals("bodyMedium should remain solid for readability", null, gradTypo.bodyMedium.brush)
+    }
 }
+
 
 
 

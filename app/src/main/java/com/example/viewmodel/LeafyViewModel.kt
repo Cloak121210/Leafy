@@ -101,6 +101,7 @@ data class LeafyUiState(
     val speakingMessageId: Long? = null,
     val useComicSans: Boolean = false,
     val isDarkTheme: Boolean = false,
+    val useGradientText: Boolean = true,
     val statusBannerMessage: String? = null,
     val totalSessionTokens: Int = 0,
     val isImportingModel: Boolean = false,
@@ -139,6 +140,7 @@ class LeafyViewModel(
     private val _sessionTpsSnapshot = MutableStateFlow(TpsTelemetrySnapshot())
     private val _useComicSans = MutableStateFlow(prefs.getBoolean(KEY_USE_COMIC_SANS, false))
     private val _isDarkTheme = MutableStateFlow(prefs.getBoolean(KEY_IS_DARK_THEME, false))
+    private val _useGradientText = MutableStateFlow(prefs.getBoolean(KEY_USE_GRADIENT_TEXT, true))
     private val _statusBannerMessage = MutableStateFlow<String?>(null)
     private val _totalSessionTokens = MutableStateFlow(0)
     private val _isImportingModel = MutableStateFlow(false)
@@ -219,9 +221,10 @@ class LeafyViewModel(
         _isImportingModel,
         _importProgress,
         _importStatusText,
-        _sessionTpsSnapshot
-    ) { isImporting, progress, statusText, sessionTps ->
-        Quadruple(isImporting, progress, statusText, sessionTps)
+        _sessionTpsSnapshot,
+        _useGradientText
+    ) { isImporting, progress, statusText, sessionTps, useGradientText ->
+        quintuple(isImporting, progress, statusText, sessionTps, useGradientText)
     }
 
     val uiState: StateFlow<LeafyUiState> = combine(
@@ -309,6 +312,7 @@ class LeafyViewModel(
             speakingMessageId = speakingId,
             useComicSans = useComicSans,
             isDarkTheme = isDarkTheme,
+            useGradientText = importState.fifth,
             statusBannerMessage = banner,
             totalSessionTokens = computedTpsTelemetry.totalSessionTokens,
             isImportingModel = importState.first,
@@ -561,6 +565,21 @@ class LeafyViewModel(
         val next = !_isDarkTheme.value
         _isDarkTheme.value = next
         prefs.edit().putBoolean(KEY_IS_DARK_THEME, next).apply()
+    }
+
+    fun toggleGradientText() {
+        val next = !_useGradientText.value
+        _useGradientText.value = next
+        prefs.edit().putBoolean(KEY_USE_GRADIENT_TEXT, next).apply()
+        showTransientBanner(
+            if (next) "Living gradient enabled on important headings & titles."
+            else "Solid color restored on headings & titles."
+        )
+    }
+
+    fun setGradientText(enabled: Boolean) {
+        _useGradientText.value = enabled
+        prefs.edit().putBoolean(KEY_USE_GRADIENT_TEXT, enabled).apply()
     }
 
     fun setPowerProfile(profile: PowerProfile) {
@@ -1720,6 +1739,7 @@ class LeafyViewModel(
         private const val KEY_POWER_PROFILE = "power_profile"
         private const val KEY_USE_COMIC_SANS = "use_comic_sans"
         private const val KEY_IS_DARK_THEME = "is_dark_theme"
+        private const val KEY_USE_GRADIENT_TEXT = "use_gradient_text"
         private const val MAX_PROMPT_CHARS = 16_000
         private const val MAX_ASSISTANT_REPLY_CHARS = 32_000
         private const val MAX_RAG_CONTENT_CHARS = 24_000

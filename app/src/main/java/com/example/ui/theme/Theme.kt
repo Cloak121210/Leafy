@@ -7,11 +7,15 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+
+val LocalUseGradientText = compositionLocalOf { true }
 
 private val LightBotanicalColorScheme = lightColorScheme(
     primary = EmeraldPrimary,
@@ -33,12 +37,12 @@ private val LightBotanicalColorScheme = lightColorScheme(
     surfaceVariant = SoftSageSurface,
     onSurfaceVariant = MutedMossText,
     surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFF1F9EE),
-    surfaceContainer = SoftSageSurface,
-    surfaceContainerHigh = BotanicalMistContainer,
-    surfaceContainerHighest = Color(0xFFCFE8C9),
+    surfaceContainerLow = Color(0xFFF3FFF7),
+    surfaceContainer = Color(0xFFEAFFF1),
+    surfaceContainerHigh = Color(0xFFDEFCE8),
+    surfaceContainerHighest = Color(0xFFD0F9DE),
     outline = LeafVeinOutline,
-    outlineVariant = Color(0xFFD5EAD0),
+    outlineVariant = Color(0xFFC8F2D6),
     error = BotanicalCoralAccent,
     onError = Color.White
 )
@@ -75,20 +79,25 @@ private val DarkBotanicalColorScheme = darkColorScheme(
 
 val LeafyShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
-    small = RoundedCornerShape(14.dp),
-    medium = RoundedCornerShape(20.dp),
-    large = RoundedCornerShape(26.dp),
-    extraLarge = RoundedCornerShape(32.dp)
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(26.dp)
 )
 
 @Composable
 fun LeafyTheme(
     darkTheme: Boolean = false,
     useComicSans: Boolean = false,
+    useGradientText: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) DarkBotanicalColorScheme else LightBotanicalColorScheme
-    val typography = buildLeafyTypography(useComicSans = useComicSans)
+    val typography = buildLeafyTypography(
+        useComicSans = useComicSans,
+        useGradientText = useGradientText,
+        isDarkTheme = darkTheme
+    )
     val view = LocalView.current
 
     if (!view.isInEditMode) {
@@ -102,10 +111,13 @@ fun LeafyTheme(
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = typography,
-        shapes = LeafyShapes,
-        content = content
-    )
+    CompositionLocalProvider(LocalUseGradientText provides useGradientText) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = typography,
+            shapes = LeafyShapes,
+            content = content
+        )
+    }
 }
+

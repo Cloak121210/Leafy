@@ -7,10 +7,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -26,7 +28,6 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
-import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.CheckCircle
@@ -52,6 +54,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
@@ -76,7 +79,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -84,6 +86,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -97,6 +100,17 @@ import com.example.ui.components.LeafyCleanTopBar
 import com.example.ui.components.OrganicLeafBackground
 import com.example.ui.components.PowerProfilePill
 import com.example.ui.components.RuntimeBadgePill
+import com.example.ui.components.importantTextColor
+import com.example.ui.components.importantTextStyle
+import com.example.ui.components.livingActiveItemBrush
+import com.example.ui.components.livingBrightButtonBrush
+import com.example.ui.components.livingBrightButtonContentColor
+import com.example.ui.components.livingHeroCardBrush
+import com.example.ui.components.livingMenuSheetBrush
+import com.example.ui.components.livingSecondaryButtonBrush
+import com.example.ui.components.livingSecondaryHeroBrush
+import com.example.ui.components.livingSurfaceCardBrush
+import com.example.ui.components.livingTertiaryHeroBrush
 import com.example.ui.components.powerProfileAccentColor
 import com.example.ui.components.runtimeAccentColor
 import com.example.ui.screens.ChatStudioScreen
@@ -124,7 +138,8 @@ class MainActivity : ComponentActivity() {
 
             LeafyTheme(
                 darkTheme = uiState.isDarkTheme,
-                useComicSans = uiState.useComicSans
+                useComicSans = uiState.useComicSans,
+                useGradientText = uiState.useGradientText
             ) {
                 LeafyAppShell(
                     uiState = uiState,
@@ -172,6 +187,7 @@ fun LeafyAppShell(
                     scope.launch { drawerState.close() }
                 },
                 onToggleComicSans = viewModel::toggleComicSans,
+                onToggleGradientText = viewModel::toggleGradientText,
                 onToggleDarkTheme = viewModel::toggleDarkTheme
             )
         }
@@ -272,6 +288,7 @@ fun LeafyAppShell(
                                 uiState = uiState,
                                 onSelectPowerProfile = viewModel::setPowerProfile,
                                 onSetComicSans = viewModel::setComicSans,
+                                onSetGradientText = viewModel::setGradientText,
                                 onToggleDarkTheme = viewModel::toggleDarkTheme,
                                 onWipeOfflineData = viewModel::wipeAllOfflineData
                             )
@@ -294,6 +311,7 @@ fun LeafyAppShell(
                 onSelectPersona = viewModel::selectPersona,
                 onSaveCustomPersona = viewModel::saveCustomPersona,
                 onToggleComicSans = viewModel::toggleComicSans,
+                onToggleGradientText = viewModel::toggleGradientText,
                 onOpenFullScreen = { tab ->
                     showSpecialCommandMenu = false
                     viewModel.selectTab(tab)
@@ -311,9 +329,10 @@ fun LeafyAppShell(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(brush = livingMenuSheetBrush())
                     .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 item(key = "sheet_model_header") {
                     Row(
@@ -328,7 +347,8 @@ fun LeafyAppShell(
                         ) {
                             Text(
                                 text = "Switch Local Model",
-                                style = MaterialTheme.typography.titleLarge
+                                style = importantTextStyle(MaterialTheme.typography.titleLarge),
+                                color = importantTextColor(MaterialTheme.colorScheme.onSurface)
                             )
                             Text(
                                 text = "Select a model or Load/Offload it in RAM",
@@ -341,6 +361,7 @@ fun LeafyAppShell(
                                 showModelSwitcherSheet = false
                                 viewModel.selectTab(LeafyTab.MODELS)
                             },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                             modifier = Modifier.testTag("sheet_open_model_hub_button")
                         ) {
                             Text("Models Menu")
@@ -352,21 +373,23 @@ fun LeafyAppShell(
                     item(key = "sheet_no_models_empty") {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
+                            shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                            )
+                                containerColor = Color.Transparent
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                         ) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    .background(brush = livingSurfaceCardBrush())
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Text(
                                     text = "No local model files loaded yet",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
+                                    style = importantTextStyle(MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)),
+                                    color = importantTextColor(MaterialTheme.colorScheme.onSurface)
                                 )
                                 Text(
                                     text = "Open the Local Models screen to select a .gguf, .pte, or .tmac file from your device storage.",
@@ -378,12 +401,20 @@ fun LeafyAppShell(
                                         showModelSwitcherSheet = false
                                         viewModel.selectTab(LeafyTab.MODELS)
                                     },
-                                    modifier = Modifier.fillMaxWidth()
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color.Transparent,
+                                        contentColor = livingBrightButtonContentColor()
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(50))
+                                        .background(brush = livingBrightButtonBrush())
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.FolderOpen,
                                         contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(15.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("Load Local Model File")
@@ -406,23 +437,26 @@ fun LeafyAppShell(
                                     showModelSwitcherSheet = false
                                 }
                                 .testTag("sheet_model_item_${model.id}"),
-                            shape = RoundedCornerShape(18.dp),
+                            shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isCurrent) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerLow
-                                }
+                                containerColor = Color.Transparent
                             ),
                             border = BorderStroke(
-                                1.dp,
+                                if (isCurrent) 1.5.dp else 1.dp,
                                 if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
                             )
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(12.dp),
+                                    .background(
+                                        brush = if (isCurrent) {
+                                            livingActiveItemBrush(MaterialTheme.colorScheme.primary)
+                                        } else {
+                                            livingSurfaceCardBrush()
+                                        }
+                                    )
+                                    .padding(10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -431,11 +465,14 @@ fun LeafyAppShell(
                                         .weight(1f)
                                         .padding(end = 8.dp)
                                 ) {
+                                    val titleStyle = MaterialTheme.typography.titleSmall.copy(
+                                        fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Medium
+                                    )
                                     Text(
                                         text = model.name,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
+                                        style = if (isCurrent) importantTextStyle(titleStyle) else titleStyle,
+                                        color = if (isCurrent) importantTextColor(MaterialTheme.colorScheme.onSurface) else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
@@ -449,7 +486,7 @@ fun LeafyAppShell(
 
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     OutlinedButton(
                                         onClick = {
@@ -460,6 +497,7 @@ fun LeafyAppShell(
                                             }
                                         },
                                         enabled = !uiState.isLoadingModelIntoRam,
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                         modifier = Modifier.testTag("sheet_toggle_ram_${model.id}")
                                     ) {
                                         Text(if (isInRam) "Offload" else "Load")
@@ -478,7 +516,7 @@ fun LeafyAppShell(
                 }
 
                 item(key = "sheet_model_bottom_spacer") {
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
         }
@@ -493,10 +531,11 @@ fun LeafyAppShell(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(brush = livingMenuSheetBrush())
                     .verticalScroll(rememberScrollState())
                     .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -510,7 +549,8 @@ fun LeafyAppShell(
                     ) {
                         Text(
                             text = "Inference Runtimes",
-                            style = MaterialTheme.typography.titleLarge
+                            style = importantTextStyle(MaterialTheme.typography.titleLarge),
+                            color = importantTextColor(MaterialTheme.colorScheme.onSurface)
                         )
                         Text(
                             text = "Select the active on-device execution engine",
@@ -523,6 +563,7 @@ fun LeafyAppShell(
                             showRuntimeSwitcherSheet = false
                             viewModel.selectTab(LeafyTab.RUNTIMES)
                         },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier.testTag("sheet_open_runtimes_screen_button")
                     ) {
                         Text("Runtimes Hub")
@@ -541,35 +582,41 @@ fun LeafyAppShell(
                                 showRuntimeSwitcherSheet = false
                             }
                             .testTag("sheet_runtime_${runtime.name.lowercase()}"),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = if (isSelected) accent.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerLow
+                            containerColor = Color.Transparent
                         ),
                         border = BorderStroke(
-                            if (isSelected) 2.dp else 1.dp,
-                            if (isSelected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                            if (isSelected) 1.5.dp else 1.dp,
+                            if (isSelected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
                         )
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(12.dp),
+                                .background(
+                                    brush = if (isSelected) {
+                                        livingActiveItemBrush(accent)
+                                    } else {
+                                        livingSurfaceCardBrush()
+                                    }
+                                )
+                                .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .padding(end = 8.dp)
+                                    .padding(end = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
                                 RuntimeBadgePill(runtime = runtime)
-                                Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = runtime.architectureNote,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Spacer(modifier = Modifier.height(2.dp))
                                 Text(
                                     text = if (compatibleCount > 0) {
                                         "$compatibleCount compatible model(s) on device (${runtime.fileExtensions.joinToString(", ")})"
@@ -593,14 +640,15 @@ fun LeafyAppShell(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
             }
         }
     }
 }
 
 /**
- * Left Botanical Canopy Drawer: Separate dedicated items for Local Models, Inference Runtimes, RAG & Personas, and Power Modes & Settings.
+ * Left Botanical Canopy Drawer: Dedicated items for Local Models, Inference Runtimes, RAG & Personas, and Power Modes & Settings.
+ * ("Chat Studio" redundant box removed to save vertical space.)
  */
 @Composable
 private fun LeafyCanopyNavigationDrawer(
@@ -610,104 +658,136 @@ private fun LeafyCanopyNavigationDrawer(
     onDeleteConversation: (Long) -> Unit,
     onNavigateToScreen: (LeafyTab) -> Unit,
     onToggleComicSans: () -> Unit,
+    onToggleGradientText: () -> Unit,
     onToggleDarkTheme: () -> Unit
 ) {
     ModalDrawerSheet(
-        modifier = Modifier.width(320.dp),
+        modifier = Modifier.width(310.dp),
         drawerContainerColor = MaterialTheme.colorScheme.surface,
         windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxHeight()
-                .padding(16.dp),
+                .background(brush = livingMenuSheetBrush())
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                Row(
+                Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color.Transparent,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
                 ) {
                     Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 8.dp),
+                            .fillMaxWidth()
+                            .background(brush = livingHeroCardBrush())
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Surface(
-                            modifier = Modifier.size(40.dp),
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.EnergySavingsLeaf,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimary
-                                )
-                            }
-                        }
-                        Column(modifier = Modifier.weight(1f, fill = false)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            Surface(
+                                modifier = Modifier.size(34.dp),
+                                shape = CircleShape,
+                                color = Color.Transparent,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
                             ) {
-                                Text(
-                                    text = "Leafy",
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = MaterialTheme.colorScheme.primaryContainer
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(brush = livingBrightButtonBrush()),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Text(
-                                        text = BuildConfig.VERSION_NAME,
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontFamily = JetBrainsMonoFontFamily,
-                                            fontWeight = FontWeight.Bold
-                                        ),
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier
-                                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                                            .testTag("drawer_version_badge")
+                                    Icon(
+                                        imageVector = Icons.Default.EnergySavingsLeaf,
+                                        contentDescription = null,
+                                        tint = livingBrightButtonContentColor(),
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
-                            Text(
-                                text = "100% Offline • Sovereign AI",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Column(modifier = Modifier.weight(1f, fill = false)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "Leafy",
+                                        style = importantTextStyle(
+                                            MaterialTheme.typography.headlineMedium.copy(
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        ),
+                                        color = importantTextColor(MaterialTheme.colorScheme.onSurface),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = Color.Transparent,
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                                    ) {
+                                        Text(
+                                            text = BuildConfig.VERSION_NAME,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontFamily = JetBrainsMonoFontFamily,
+                                                fontWeight = FontWeight.Medium
+                                            ),
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier
+                                                .background(brush = livingSecondaryButtonBrush())
+                                                .padding(horizontal = 7.dp, vertical = 1.5.dp)
+                                                .testTag("drawer_version_badge")
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "100% Offline • Sovereign AI",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                    }
 
-                    PowerProfilePill(
-                        profile = uiState.powerProfile,
-                        onClick = { onNavigateToScreen(LeafyTab.ECO_SETTINGS) }
-                    )
+                        PowerProfilePill(
+                            profile = uiState.powerProfile,
+                            onClick = { onNavigateToScreen(LeafyTab.ECO_SETTINGS) }
+                        )
+                    }
                 }
 
                 Button(
                     onClick = onNewConversation,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = livingBrightButtonContentColor()
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(brush = livingBrightButtonBrush())
                         .testTag("drawer_new_thread_button"),
-                    shape = RoundedCornerShape(16.dp)
+                    shape = RoundedCornerShape(14.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("New Offline Conversation")
@@ -715,24 +795,13 @@ private fun LeafyCanopyNavigationDrawer(
 
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     item(key = "drawer_workspaces_header") {
                         Text(
                             text = "WORKSPACES & ENGINES",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    item(key = "drawer_workspace_chat") {
-                        DrawerWorkspaceCard(
-                            icon = Icons.Default.ChatBubbleOutline,
-                            title = "Chat Studio",
-                            subtitle = uiState.activeConversation?.title ?: "Active local conversation",
-                            isSelected = uiState.currentTab == LeafyTab.CHAT,
-                            onClick = { onNavigateToScreen(LeafyTab.CHAT) },
-                            testTag = "drawer_nav_chat"
                         )
                     }
 
@@ -751,7 +820,7 @@ private fun LeafyCanopyNavigationDrawer(
                         DrawerWorkspaceCard(
                             icon = Icons.Default.Memory,
                             title = "Inference Runtimes",
-                            subtitle = "Active: ${uiState.activeRuntime.displayName} (llama.cpp, Bitnet, T-MAC, ExecuTorch)",
+                            subtitle = "Active: ${uiState.activeRuntime.displayName}",
                             isSelected = uiState.currentTab == LeafyTab.RUNTIMES,
                             onClick = { onNavigateToScreen(LeafyTab.RUNTIMES) },
                             testTag = "drawer_nav_runtimes"
@@ -781,8 +850,8 @@ private fun LeafyCanopyNavigationDrawer(
                     }
 
                     item(key = "drawer_threads_divider") {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
                             Text(
                                 text = "RECENT OFFLINE THREADS",
                                 style = MaterialTheme.typography.labelSmall,
@@ -797,15 +866,16 @@ private fun LeafyCanopyNavigationDrawer(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .testTag("empty_conversations_card"),
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color.Transparent,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
                             ) {
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        .background(brush = livingSurfaceCardBrush())
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
                                     Text(
                                         text = "No saved threads yet",
@@ -813,7 +883,7 @@ private fun LeafyCanopyNavigationDrawer(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "Start a prompt in Chat Studio to create your first offline session.",
+                                        text = "Send a message in the chat screen to create your first offline session.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -829,44 +899,56 @@ private fun LeafyCanopyNavigationDrawer(
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
+                                    .clip(RoundedCornerShape(12.dp))
                                     .clickable { onSelectConversation(conv.id) },
-                                shape = RoundedCornerShape(14.dp),
-                                color = if (isSelected) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerLow
-                                }
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color.Transparent,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                                )
                             ) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                        .background(
+                                            brush = if (isSelected) {
+                                                livingActiveItemBrush(MaterialTheme.colorScheme.primary)
+                                            } else {
+                                                livingSurfaceCardBrush()
+                                            }
+                                        )
+                                        .padding(horizontal = 10.dp, vertical = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Row(
                                         modifier = Modifier
                                             .weight(1f)
-                                            .padding(end = 8.dp),
+                                            .padding(end = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(7.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.ChatBubbleOutline,
                                             contentDescription = null,
                                             tint = if (isSelected) {
-                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                                MaterialTheme.colorScheme.primary
                                             } else {
                                                 MaterialTheme.colorScheme.onSurfaceVariant
                                             },
-                                            modifier = Modifier.size(16.dp)
+                                            modifier = Modifier.size(15.dp)
                                         )
                                         Column(modifier = Modifier.weight(1f)) {
+                                            val convTitleStyle = MaterialTheme.typography.labelLarge.copy(
+                                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+                                            )
                                             Text(
                                                 text = conv.title,
-                                                style = MaterialTheme.typography.labelLarge,
-                                                maxLines = 1,
+                                                style = if (isSelected) importantTextStyle(convTitleStyle) else convTitleStyle,
+                                                color = if (isSelected) importantTextColor(MaterialTheme.colorScheme.onSurface) else MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             Text(
@@ -889,7 +971,7 @@ private fun LeafyCanopyNavigationDrawer(
                                         Icon(
                                             imageVector = Icons.Default.DeleteOutline,
                                             contentDescription = "Delete conversation",
-                                            modifier = Modifier.size(16.dp)
+                                            modifier = Modifier.size(15.dp)
                                         )
                                     }
                                 }
@@ -900,38 +982,56 @@ private fun LeafyCanopyNavigationDrawer(
             }
 
             Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh
+                shape = RoundedCornerShape(14.dp),
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                        .background(brush = livingSecondaryButtonBrush())
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable(onClick = onToggleComicSans)
-                            .padding(horizontal = 8.dp, vertical = 10.dp)
+                            .padding(horizontal = 6.dp, vertical = 8.dp)
                             .testTag("drawer_comic_sans_toggle"),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.FontDownload,
                             contentDescription = "Toggle Comic Sans",
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = if (uiState.useComicSans) "Comic Sans: ON" else "Rounded Sans",
+                            text = if (uiState.useComicSans) "Comic Sans" else "Rounded Sans",
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onToggleGradientText,
+                        modifier = Modifier
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .testTag("drawer_gradient_text_toggle")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = "Toggle gradient text",
+                            tint = if (uiState.useGradientText) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
                     }
 
@@ -943,7 +1043,8 @@ private fun LeafyCanopyNavigationDrawer(
                     ) {
                         Icon(
                             imageVector = if (uiState.isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                            contentDescription = "Toggle dark theme"
+                            contentDescription = "Toggle dark theme",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -964,67 +1065,76 @@ private fun DrawerWorkspaceCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
             .testTag(testTag),
-        shape = RoundedCornerShape(16.dp),
-        color = if (isSelected) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerLowest
-        },
+        shape = RoundedCornerShape(14.dp),
+        color = Color.Transparent,
         border = BorderStroke(
             if (isSelected) 1.5.dp else 1.dp,
-            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
         )
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(10.dp),
+                .background(
+                    brush = if (isSelected) {
+                        livingActiveItemBrush(MaterialTheme.colorScheme.primary)
+                    } else {
+                        livingSurfaceCardBrush()
+                    }
+                )
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(end = 8.dp),
+                    .padding(end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Surface(
-                    modifier = Modifier.size(34.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.primaryContainer
-                    }
+                    modifier = Modifier.size(30.dp),
+                    shape = RoundedCornerShape(9.dp),
+                    color = Color.Transparent,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                brush = if (isSelected) {
+                                    livingBrightButtonBrush()
+                                } else {
+                                    livingSecondaryButtonBrush()
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
                             imageVector = icon,
                             contentDescription = null,
                             tint = if (isSelected) {
-                                MaterialTheme.colorScheme.onPrimary
+                                livingBrightButtonContentColor()
                             } else {
-                                MaterialTheme.colorScheme.onPrimaryContainer
+                                MaterialTheme.colorScheme.primary
                             },
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
                 Column(modifier = Modifier.weight(1f)) {
+                    val baseTitleStyle = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+                    )
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        maxLines = 1,
+                        style = if (isSelected) importantTextStyle(baseTitleStyle) else baseTitleStyle,
+                        color = if (isSelected) importantTextColor(MaterialTheme.colorScheme.onSurface) else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
@@ -1043,16 +1153,19 @@ private fun DrawerWorkspaceCard(
                 if (isSelected) {
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.primary
+                        color = Color.Transparent,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
                     ) {
                         Text(
                             text = "ACTIVE",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontFamily = JetBrainsMonoFontFamily,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Medium
                             ),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            color = livingBrightButtonContentColor(),
+                            modifier = Modifier
+                                .background(brush = livingBrightButtonBrush())
+                                .padding(horizontal = 6.dp, vertical = 1.5.dp)
                         )
                     }
                 }
@@ -1082,6 +1195,7 @@ private fun LeafyPowerModesAndStudioSheet(
     onSelectPersona: (com.example.data.PersonaPresetEntity) -> Unit,
     onSaveCustomPersona: (String, String, String, Float, Float) -> Unit,
     onToggleComicSans: () -> Unit,
+    onToggleGradientText: () -> Unit,
     onOpenFullScreen: (LeafyTab) -> Unit
 ) {
     var showAddPresetDialog by rememberSaveable { mutableStateOf(false) }
@@ -1095,11 +1209,18 @@ private fun LeafyPowerModesAndStudioSheet(
 
         AlertDialog(
             onDismissRequest = { showAddPresetDialog = false },
-            title = { Text("Add Custom Preset") },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = {
+                Text(
+                    text = "Add Custom Preset",
+                    style = importantTextStyle(MaterialTheme.typography.titleLarge),
+                    color = importantTextColor(MaterialTheme.colorScheme.onSurface)
+                )
+            },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     OutlinedTextField(
                         value = name,
@@ -1152,6 +1273,10 @@ private fun LeafyPowerModesAndStudioSheet(
                         showAddPresetDialog = false
                     },
                     enabled = name.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    ),
                     modifier = Modifier.testTag("sheet_confirm_save_persona_button")
                 ) {
                     Text("Save & Activate")
@@ -1168,10 +1293,11 @@ private fun LeafyPowerModesAndStudioSheet(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .background(brush = livingMenuSheetBrush())
             .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1185,7 +1311,8 @@ private fun LeafyPowerModesAndStudioSheet(
             ) {
                 Text(
                     text = "Power Modes & Studio Controls",
-                    style = MaterialTheme.typography.titleLarge
+                    style = importantTextStyle(MaterialTheme.typography.titleLarge),
+                    color = importantTextColor(MaterialTheme.colorScheme.onSurface)
                 )
                 Text(
                     text = "Offline thermal modes, persona & RAG tuning",
@@ -1196,18 +1323,21 @@ private fun LeafyPowerModesAndStudioSheet(
 
             Surface(
                 shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.primaryContainer
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    modifier = Modifier
+                        .background(brush = livingSecondaryButtonBrush())
+                        .padding(horizontal = 9.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.BatteryChargingFull,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(14.dp)
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(13.dp)
                     )
                     val sheetTps = when {
                         uiState.tpsTelemetry.instantTps > 0f -> uiState.tpsTelemetry.instantTps
@@ -1219,16 +1349,16 @@ private fun LeafyPowerModesAndStudioSheet(
                         text = "$tpsPrefix${uiState.telemetry.batteryPercent}% • ${uiState.telemetry.batteryTempCelsius}°C",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFamily = JetBrainsMonoFontFamily,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Medium
                         ),
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
         }
 
         // 1. Preset Power Modes Row
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 text = "Power & Thermal Mode",
                 style = MaterialTheme.typography.labelMedium,
@@ -1244,23 +1374,33 @@ private fun LeafyPowerModesAndStudioSheet(
                     Surface(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(14.dp))
                             .clickable { onSelectPowerProfile(profile) }
                             .testTag("menu_power_${profile.name.lowercase()}"),
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (selected) accent.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceContainerLow,
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color.Transparent,
                         border = BorderStroke(
-                            if (selected) 2.dp else 1.dp,
-                            if (selected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                            if (selected) 1.5.dp else 1.dp,
+                            if (selected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
                         )
                     ) {
                         Column(
-                            modifier = Modifier.padding(10.dp),
+                            modifier = Modifier
+                                .background(
+                                    brush = if (selected) {
+                                        livingActiveItemBrush(accent)
+                                    } else {
+                                        livingSurfaceCardBrush()
+                                    }
+                                )
+                                .padding(horizontal = 9.dp, vertical = 7.dp),
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Text(
                                 text = profile.displayName,
-                                style = MaterialTheme.typography.labelLarge,
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                ),
                                 color = if (selected) accent else MaterialTheme.colorScheme.onSurface
                             )
                             Text(
@@ -1279,12 +1419,12 @@ private fun LeafyPowerModesAndStudioSheet(
         // 2. Persona & Pinned RAG Quick Row
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Surface(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(18.dp))
+                    .clip(RoundedCornerShape(16.dp))
                     .clickable {
                         if (uiState.personas.isNotEmpty()) {
                             val idx = uiState.personas.indexOfFirst { it.id == uiState.activePersona?.id }
@@ -1293,22 +1433,25 @@ private fun LeafyPowerModesAndStudioSheet(
                         }
                     }
                     .testTag("menu_cycle_persona_card"),
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f))
             ) {
                 Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    modifier = Modifier
+                        .background(brush = livingSecondaryHeroBrush())
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.PersonPin,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(15.dp)
                         )
                         Text(
                             text = "Active Persona",
@@ -1318,26 +1461,27 @@ private fun LeafyPowerModesAndStudioSheet(
                     }
                     Text(
                         text = uiState.activePersona?.name ?: "Leafy Assistant",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        maxLines = 1,
+                        style = importantTextStyle(MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)),
+                        color = importantTextColor(MaterialTheme.colorScheme.onSecondaryContainer),
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Tap to cycle • T=${uiState.activePersona?.temperature ?: 0.65f}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
                     )
                     TextButton(
                         onClick = { showAddPresetDialog = true },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                         modifier = Modifier.testTag("sheet_add_custom_preset_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = null,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(13.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(3.dp))
                         Text("Add Custom Preset", style = MaterialTheme.typography.labelSmall)
                     }
                 }
@@ -1346,25 +1490,28 @@ private fun LeafyPowerModesAndStudioSheet(
             Surface(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(18.dp))
+                    .clip(RoundedCornerShape(16.dp))
                     .clickable { onOpenFullScreen(LeafyTab.KNOWLEDGE) }
                     .testTag("menu_open_rag_studio_card"),
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f)
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f))
             ) {
                 Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    modifier = Modifier
+                        .background(brush = livingTertiaryHeroBrush())
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.PushPin,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(15.dp)
                         )
                         Text(
                             text = "Local Document RAG",
@@ -1374,8 +1521,10 @@ private fun LeafyPowerModesAndStudioSheet(
                     }
                     Text(
                         text = "${uiState.pinnedRagDocuments.size} of ${uiState.ragDocuments.size} Docs Pinned",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                        style = importantTextStyle(MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)),
+                        color = importantTextColor(MaterialTheme.colorScheme.onTertiaryContainer),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Manage notes & personas →",
@@ -1386,49 +1535,97 @@ private fun LeafyPowerModesAndStudioSheet(
             }
         }
 
-        // 3. Typography Toggle
+        // 3. Typography & Living Gradient Text Toggles
         Surface(
-            shape = RoundedCornerShape(18.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            shape = RoundedCornerShape(16.dp),
+            color = Color.Transparent,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .background(brush = livingSurfaceCardBrush())
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 8.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.FontDownload,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Playful Comic Sans Font",
-                            style = MaterialTheme.typography.titleSmall
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FontDownload,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
                         )
-                        Text(
-                            text = if (uiState.useComicSans) "Comic Neue active" else "Rounded Sans (Quicksand/Nunito) active",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Playful Comic Sans Font",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                text = if (uiState.useComicSans) "Comic Neue active" else "Rounded Sans (Quicksand/Nunito) active",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
+
+                    Switch(
+                        checked = uiState.useComicSans,
+                        onCheckedChange = { onToggleComicSans() },
+                        modifier = Modifier.testTag("menu_comic_sans_switch")
+                    )
                 }
 
-                Switch(
-                    checked = uiState.useComicSans,
-                    onCheckedChange = { onToggleComicSans() },
-                    modifier = Modifier.testTag("menu_comic_sans_switch")
-                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Living Gradient on Important Text",
+                                style = importantTextStyle(MaterialTheme.typography.titleSmall),
+                                color = importantTextColor(MaterialTheme.colorScheme.onSurface)
+                            )
+                            Text(
+                                text = if (uiState.useGradientText) "Botanical gradient headings active" else "Solid heading colors active",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = uiState.useGradientText,
+                        onCheckedChange = { onToggleGradientText() },
+                        modifier = Modifier.testTag("menu_gradient_text_switch")
+                    )
+                }
             }
         }
 
@@ -1439,12 +1636,13 @@ private fun LeafyPowerModesAndStudioSheet(
         ) {
             OutlinedButton(
                 onClick = { onOpenFullScreen(LeafyTab.KNOWLEDGE) },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 modifier = Modifier.weight(1f)
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.MenuBook,
                     contentDescription = null,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(15.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("RAG & Prompts")
@@ -1452,18 +1650,26 @@ private fun LeafyPowerModesAndStudioSheet(
 
             Button(
                 onClick = { onOpenFullScreen(LeafyTab.ECO_SETTINGS) },
-                modifier = Modifier.weight(1f)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = livingBrightButtonContentColor()
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(50))
+                    .background(brush = livingBrightButtonBrush())
             ) {
                 Icon(
                     imageVector = Icons.Default.Settings,
                     contentDescription = null,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(15.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Power & Telemetry")
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(6.dp))
     }
 }

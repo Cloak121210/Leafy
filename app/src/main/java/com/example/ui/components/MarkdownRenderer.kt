@@ -77,25 +77,27 @@ fun MarkdownText(
 
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        val userContentColor = livingPrimaryBubbleContentColor()
         for (block in blocks) {
             when (block) {
                 is MarkdownBlock.Header -> {
-                    val headerStyle = when (block.level) {
+                    val baseHeaderStyle = when (block.level) {
                         1 -> MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                        2 -> MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        else -> MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                        2 -> MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        else -> MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium)
                     }
-                    val textColor = if (color != Color.Unspecified) color
-                    else if (isUser) MaterialTheme.colorScheme.onPrimary
+                    val headerStyle = if (block.level <= 2) importantTextStyle(baseHeaderStyle) else baseHeaderStyle
+                    val fallbackColor = if (color != Color.Unspecified) color
+                    else if (isUser) userContentColor
                     else MaterialTheme.colorScheme.primary
 
                     Text(
                         text = parseInlineMarkdown(block.text, isUser = isUser),
                         style = headerStyle,
-                        color = textColor,
-                        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                        color = if (block.level <= 2) importantTextColor(fallbackColor) else fallbackColor,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 1.dp)
                     )
                 }
 
@@ -134,7 +136,7 @@ fun MarkdownText(
 
                 is MarkdownBlock.Paragraph -> {
                     val textColor = if (color != Color.Unspecified) color
-                    else if (isUser) MaterialTheme.colorScheme.onPrimary
+                    else if (isUser) userContentColor
                     else MaterialTheme.colorScheme.onSurface
 
                     Text(
@@ -146,8 +148,8 @@ fun MarkdownText(
 
                 MarkdownBlock.Divider -> {
                     HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 4.dp),
-                        color = if (isUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.3f)
+                        modifier = Modifier.padding(vertical = 2.dp),
+                        color = if (isUser) userContentColor.copy(alpha = 0.28f)
                         else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
                     )
                 }
@@ -162,24 +164,25 @@ private fun BulletItemView(
     isUser: Boolean,
     color: Color
 ) {
+    val userContentColor = livingPrimaryBubbleContentColor()
     val textColor = if (color != Color.Unspecified) color
-    else if (isUser) MaterialTheme.colorScheme.onPrimary
+    else if (isUser) userContentColor
     else MaterialTheme.colorScheme.onSurface
 
-    val bulletColor = if (isUser) MaterialTheme.colorScheme.onPrimary
+    val bulletColor = if (isUser) userContentColor
     else MaterialTheme.colorScheme.primary
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(start = 4.dp, top = 1.dp, bottom = 1.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.Top
     ) {
         Box(
             modifier = Modifier
-                .padding(top = 7.dp)
-                .size(6.dp)
+                .padding(top = 6.dp)
+                .size(5.dp)
                 .clip(CircleShape)
                 .background(bulletColor)
         )
@@ -199,23 +202,24 @@ private fun NumberedItemView(
     isUser: Boolean,
     color: Color
 ) {
+    val userContentColor = livingPrimaryBubbleContentColor()
     val textColor = if (color != Color.Unspecified) color
-    else if (isUser) MaterialTheme.colorScheme.onPrimary
+    else if (isUser) userContentColor
     else MaterialTheme.colorScheme.onSurface
 
-    val numberColor = if (isUser) MaterialTheme.colorScheme.onPrimary
+    val numberColor = if (isUser) userContentColor
     else MaterialTheme.colorScheme.primary
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(start = 4.dp, top = 1.dp, bottom = 1.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.Top
     ) {
         Text(
             text = "$number.",
-            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
             color = numberColor
         )
         Text(
@@ -233,14 +237,15 @@ private fun BlockQuoteView(
     isUser: Boolean,
     baseColor: Color
 ) {
-    val quoteBg = if (isUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.12f)
-    else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f)
+    val userContentColor = livingPrimaryBubbleContentColor()
+    val quoteBg = if (isUser) userContentColor.copy(alpha = 0.08f)
+    else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f)
 
-    val barColor = if (isUser) MaterialTheme.colorScheme.onPrimary
+    val barColor = if (isUser) userContentColor
     else MaterialTheme.colorScheme.tertiary
 
     val textColor = if (baseColor != Color.Unspecified) baseColor
-    else if (isUser) MaterialTheme.colorScheme.onPrimary
+    else if (isUser) userContentColor
     else MaterialTheme.colorScheme.onSurface
 
     Row(
@@ -285,14 +290,9 @@ private fun CodeBlockCard(
     val context = LocalContext.current
     var copied by remember { mutableStateOf(false) }
 
-    val containerColor = if (isUser) {
-        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.15f)
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerHighest
-    }
-
+    val userContentColor = livingPrimaryBubbleContentColor()
     val borderColor = if (isUser) {
-        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.35f)
+        userContentColor.copy(alpha = 0.25f)
     } else {
         MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
     }
@@ -300,21 +300,22 @@ private fun CodeBlockCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = containerColor,
+            .padding(vertical = 2.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = Color.Transparent,
         border = BorderStroke(1.dp, borderColor)
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(brush = livingMetricBoxBrush())
+        ) {
             // Code header strip
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(
-                        if (isUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.10f)
-                        else MaterialTheme.colorScheme.surfaceContainerHigh
-                    )
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .background(brush = livingSecondaryButtonBrush())
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -322,9 +323,9 @@ private fun CodeBlockCard(
                     text = language.ifBlank { "code" },
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontFamily = JetBrainsMonoFontFamily,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Medium
                     ),
-                    color = if (isUser) MaterialTheme.colorScheme.onPrimary
+                    color = if (isUser) userContentColor
                     else MaterialTheme.colorScheme.primary
                 )
 
@@ -347,14 +348,14 @@ private fun CodeBlockCard(
                     Icon(
                         imageVector = if (copied) Icons.Default.Done else Icons.Default.ContentCopy,
                         contentDescription = "Copy code",
-                        tint = if (isUser) MaterialTheme.colorScheme.onPrimary
+                        tint = if (isUser) userContentColor
                         else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(13.dp)
+                        modifier = Modifier.size(12.dp)
                     )
                     Text(
                         text = if (copied) "Copied" else "Copy",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isUser) MaterialTheme.colorScheme.onPrimary
+                        color = if (isUser) userContentColor
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -365,16 +366,16 @@ private fun CodeBlockCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
-                    .padding(12.dp)
+                    .padding(10.dp)
             ) {
                 Text(
                     text = code,
                     style = TextStyle(
                         fontFamily = JetBrainsMonoFontFamily,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
                     ),
-                    color = if (isUser) MaterialTheme.colorScheme.onPrimary
+                    color = if (isUser) userContentColor
                     else MaterialTheme.colorScheme.onSurface
                 )
             }
@@ -513,13 +514,14 @@ private val NUMBERED_LIST_REGEX = Regex("^(\\d+)\\.\\s+(.+)")
  */
 @Composable
 fun parseInlineMarkdown(text: String, isUser: Boolean): AnnotatedString {
-    val codeBg = if (isUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.18f)
+    val userContentColor = livingPrimaryBubbleContentColor()
+    val codeBg = if (isUser) userContentColor.copy(alpha = 0.12f)
     else MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
 
-    val codeColor = if (isUser) MaterialTheme.colorScheme.onPrimary
+    val codeColor = if (isUser) userContentColor
     else MaterialTheme.colorScheme.primary
 
-    val linkColor = if (isUser) MaterialTheme.colorScheme.onPrimary
+    val linkColor = if (isUser) userContentColor
     else MaterialTheme.colorScheme.tertiary
 
     return remember(text, isUser, codeBg, codeColor, linkColor) {

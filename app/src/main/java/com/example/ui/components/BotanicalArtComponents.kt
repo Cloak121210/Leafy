@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -50,6 +49,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -59,9 +59,28 @@ import com.example.data.LocalModelEntity
 import com.example.data.PowerProfile
 import com.example.ui.theme.BalancedProfileDark
 import com.example.ui.theme.BalancedProfileLight
+import com.example.ui.theme.BrightButtonLimeMid
+import com.example.ui.theme.BrightButtonMintStart
+import com.example.ui.theme.BrightButtonSunEnd
+import com.example.ui.theme.BrightCardAquaTint
+import com.example.ui.theme.BrightCardMintTint
+import com.example.ui.theme.BrightCardSunTint
+import com.example.ui.theme.ChlorophyllMintGlow
+import com.example.ui.theme.DarkAmberSporeGlow
+import com.example.ui.theme.DarkBioluminescentMint
+import com.example.ui.theme.DarkCanopySurface
+import com.example.ui.theme.DarkCanopyTopGlow
+import com.example.ui.theme.DarkCardContainer
+import com.example.ui.theme.DarkEmeraldContainer
+import com.example.ui.theme.DarkMossBackground
+import com.example.ui.theme.DeepForestInk
+import com.example.ui.theme.DewdropAquaGlow
 import com.example.ui.theme.EcoProfileDark
 import com.example.ui.theme.EcoProfileLight
+import com.example.ui.theme.ElevatedLeafCard
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.ui.theme.LocalUseGradientText
+import com.example.ui.theme.OnBrightChlorophyll
 import com.example.ui.theme.PerformanceProfileDark
 import com.example.ui.theme.PerformanceProfileLight
 import com.example.ui.theme.RuntimeBitnetDark
@@ -72,6 +91,12 @@ import com.example.ui.theme.RuntimeLlamaCppDark
 import com.example.ui.theme.RuntimeLlamaCppLight
 import com.example.ui.theme.RuntimeTMacDark
 import com.example.ui.theme.RuntimeTMacLight
+import com.example.ui.theme.SunbeamMeadowWarm
+import com.example.ui.theme.SunbeamSecondaryContainer
+import com.example.ui.theme.SunlitCanopyMist
+import com.example.ui.theme.SunlitGoldHalo
+import com.example.ui.theme.SunlitMorningSky
+import com.example.ui.theme.buildImportantTextGradientBrush
 
 fun runtimeAccentColorForTheme(runtime: AiRuntime, isDarkTheme: Boolean): Color = when (runtime) {
     AiRuntime.LLAMA_CPP -> if (isDarkTheme) RuntimeLlamaCppDark else RuntimeLlamaCppLight
@@ -87,56 +112,402 @@ fun powerProfileAccentColorForTheme(profile: PowerProfile, isDarkTheme: Boolean)
 }
 
 @Composable
+fun isLeafyDarkTheme(): Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f
+
+@Composable
 fun runtimeAccentColor(runtime: AiRuntime): Color {
-    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    return runtimeAccentColorForTheme(runtime, isDark)
+    return runtimeAccentColorForTheme(runtime, isLeafyDarkTheme())
 }
 
 @Composable
 fun powerProfileAccentColor(profile: PowerProfile): Color {
-    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    return powerProfileAccentColorForTheme(profile, isDark)
+    return powerProfileAccentColorForTheme(profile, isLeafyDarkTheme())
+}
+
+@Composable
+fun livingImportantTextBrush(): Brush {
+    return buildImportantTextGradientBrush(isLeafyDarkTheme())
 }
 
 /**
- * Subtle organic leaf-vein and sunlit contour watermark drawn on Canvas behind screens.
+ * Applies the living botanical multi-stop gradient brush to important headings/titles/values
+ * when the user's "Gradient Important Text" toggle is enabled.
+ */
+@Composable
+fun importantTextStyle(baseStyle: TextStyle): TextStyle {
+    return if (LocalUseGradientText.current) {
+        baseStyle.copy(brush = livingImportantTextBrush())
+    } else {
+        baseStyle
+    }
+}
+
+/**
+ * Returns Color.Unspecified when Gradient Important Text is enabled so Material3 Text
+ * does not overwrite the TextStyle.brush with a flat solid color.
+ */
+@Composable
+fun importantTextColor(fallbackColor: Color): Color {
+    return if (LocalUseGradientText.current) {
+        Color.Unspecified
+    } else {
+        fallbackColor
+    }
+}
+
+@Composable
+fun livingTopBarBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                DarkMossBackground.copy(alpha = 0.96f),
+                DarkCanopyTopGlow.copy(alpha = 0.96f),
+                DarkBioluminescentMint.copy(alpha = 0.92f)
+            )
+        )
+    } else {
+        Brush.horizontalGradient(
+            colors = listOf(
+                SunlitMorningSky,
+                ChlorophyllMintGlow.copy(alpha = 0.78f),
+                SunbeamMeadowWarm
+            )
+        )
+    }
+}
+
+@Composable
+fun livingMenuSheetBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.verticalGradient(
+            colors = listOf(
+                DarkCanopyTopGlow,
+                DarkMossBackground,
+                DarkCanopySurface
+            )
+        )
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(
+                SunlitMorningSky,
+                SunlitCanopyMist,
+                SunbeamMeadowWarm
+            )
+        )
+    }
+}
+
+@Composable
+fun livingSurfaceCardBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                DarkCardContainer,
+                DarkCanopyTopGlow,
+                DarkCanopySurface
+            )
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                ElevatedLeafCard,
+                BrightCardMintTint,
+                BrightCardSunTint
+            )
+        )
+    }
+}
+
+@Composable
+fun livingMetricBoxBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                DarkCanopySurface,
+                DarkBioluminescentMint.copy(alpha = 0.65f)
+            )
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                ElevatedLeafCard,
+                BrightCardAquaTint,
+                BrightCardMintTint
+            )
+        )
+    }
+}
+
+@Composable
+fun livingBrightButtonBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                MaterialTheme.colorScheme.primary,
+                MaterialTheme.colorScheme.tertiary
+            )
+        )
+    } else {
+        Brush.horizontalGradient(
+            colors = listOf(
+                BrightButtonMintStart,
+                BrightButtonLimeMid,
+                BrightButtonSunEnd
+            )
+        )
+    }
+}
+
+@Composable
+fun livingBrightButtonContentColor(): Color {
+    return if (isLeafyDarkTheme()) OnBrightChlorophyll else DeepForestInk
+}
+
+@Composable
+fun livingSecondaryButtonBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                DarkBioluminescentMint,
+                DarkCardContainer
+            )
+        )
+    } else {
+        Brush.horizontalGradient(
+            colors = listOf(
+                BrightCardMintTint,
+                ChlorophyllMintGlow.copy(alpha = 0.72f),
+                SunbeamMeadowWarm
+            )
+        )
+    }
+}
+
+@Composable
+fun livingHeroCardBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                DarkEmeraldContainer.copy(alpha = 0.75f),
+                DarkBioluminescentMint.copy(alpha = 0.88f),
+                DarkCardContainer.copy(alpha = 0.92f)
+            )
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                ChlorophyllMintGlow,
+                SunlitCanopyMist,
+                SunbeamMeadowWarm
+            )
+        )
+    }
+}
+
+@Composable
+fun livingSecondaryHeroBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                DarkAmberSporeGlow,
+                DarkBioluminescentMint.copy(alpha = 0.78f),
+                DarkCanopySurface
+            )
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                SunbeamSecondaryContainer.copy(alpha = 0.88f),
+                SunbeamMeadowWarm,
+                SunlitCanopyMist
+            )
+        )
+    }
+}
+
+@Composable
+fun livingTertiaryHeroBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                DarkCanopyTopGlow,
+                DarkBioluminescentMint.copy(alpha = 0.82f),
+                DarkCardContainer
+            )
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                DewdropAquaGlow,
+                SunlitCanopyMist,
+                SunbeamMeadowWarm
+            )
+        )
+    }
+}
+
+@Composable
+fun livingActiveItemBrush(accentColor: Color): Brush {
+    val isDark = isLeafyDarkTheme()
+    val baseCard = MaterialTheme.colorScheme.surfaceContainerLowest
+    return if (isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                accentColor.copy(alpha = 0.24f),
+                accentColor.copy(alpha = 0.10f),
+                baseCard
+            )
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                accentColor.copy(alpha = 0.16f),
+                ChlorophyllMintGlow.copy(alpha = 0.68f),
+                SunbeamMeadowWarm
+            )
+        )
+    }
+}
+
+@Composable
+fun livingPrimaryBubbleBrush(): Brush {
+    val isDark = isLeafyDarkTheme()
+    return if (isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                DarkEmeraldContainer,
+                DarkBioluminescentMint
+            )
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                BrightButtonMintStart.copy(alpha = 0.72f),
+                BrightButtonLimeMid.copy(alpha = 0.85f),
+                BrightButtonSunEnd.copy(alpha = 0.78f)
+            )
+        )
+    }
+}
+
+@Composable
+fun livingPrimaryBubbleContentColor(): Color {
+    return if (isLeafyDarkTheme()) MaterialTheme.colorScheme.onPrimaryContainer else DeepForestInk
+}
+
+/**
+ * Luminous, living sunlit botanical conservatory background with multi-stop gradients,
+ * warm sunbeam halos, and organic leaf-vein artistry drawn on Canvas behind screens.
  */
 @Composable
 fun OrganicLeafBackground(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    val primaryTint = MaterialTheme.colorScheme.primary.copy(alpha = 0.055f)
-    val secondaryTint = MaterialTheme.colorScheme.secondary.copy(alpha = 0.045f)
-    val tertiaryTint = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.04f)
+    val isDark = isLeafyDarkTheme()
+    val primaryTint = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.08f else 0.09f)
+    val secondaryTint = MaterialTheme.colorScheme.secondary.copy(alpha = if (isDark) 0.06f else 0.10f)
+    val tertiaryTint = MaterialTheme.colorScheme.tertiary.copy(alpha = if (isDark) 0.05f else 0.08f)
+
+    val baseBrush = if (isDark) {
+        Brush.verticalGradient(
+            colors = listOf(
+                DarkMossBackground,
+                DarkCanopyTopGlow,
+                DarkMossBackground
+            )
+        )
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(
+                SunlitMorningSky,
+                SunlitCanopyMist,
+                SunbeamMeadowWarm
+            )
+        )
+    }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(brush = baseBrush)
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
 
+            // Top-left warm golden sunbeam halo in light mode / emerald canopy aura in dark mode
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(secondaryTint.copy(alpha = 0.09f), Color.Transparent),
-                    center = Offset(w * 0.88f, h * 0.08f),
-                    radius = w * 0.65f
+                    colors = listOf(
+                        if (isDark) primaryTint.copy(alpha = 0.13f) else SunlitGoldHalo.copy(alpha = 0.42f),
+                        Color.Transparent
+                    ),
+                    center = Offset(w * 0.12f, h * 0.06f),
+                    radius = w * 0.75f
                 ),
-                center = Offset(w * 0.88f, h * 0.08f),
-                radius = w * 0.65f
+                center = Offset(w * 0.12f, h * 0.06f),
+                radius = w * 0.75f
             )
 
+            // Top-right fresh chlorophyll glow
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(primaryTint.copy(alpha = 0.10f), Color.Transparent),
-                    center = Offset(w * 0.12f, h * 0.85f),
-                    radius = w * 0.7f
+                    colors = listOf(
+                        if (isDark) secondaryTint.copy(alpha = 0.10f) else ChlorophyllMintGlow.copy(alpha = 0.65f),
+                        Color.Transparent
+                    ),
+                    center = Offset(w * 0.90f, h * 0.12f),
+                    radius = w * 0.68f
                 ),
-                center = Offset(w * 0.12f, h * 0.85f),
-                radius = w * 0.7f
+                center = Offset(w * 0.90f, h * 0.12f),
+                radius = w * 0.68f
+            )
+
+            // Bottom-left dewy botanical mist
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        if (isDark) primaryTint.copy(alpha = 0.11f) else DewdropAquaGlow.copy(alpha = 0.58f),
+                        Color.Transparent
+                    ),
+                    center = Offset(w * 0.15f, h * 0.86f),
+                    radius = w * 0.72f
+                ),
+                center = Offset(w * 0.15f, h * 0.86f),
+                radius = w * 0.72f
+            )
+
+            // Organic upper botanical leaf contour & central vein
+            val upperLeafContour = Path().apply {
+                moveTo(w * 0.95f, h * 0.01f)
+                cubicTo(
+                    w * 0.68f, h * 0.08f,
+                    w * 0.56f, h * 0.26f,
+                    w * 0.62f, h * 0.44f
+                )
+                cubicTo(
+                    w * 0.82f, h * 0.36f,
+                    w * 0.92f, h * 0.18f,
+                    w * 0.95f, h * 0.01f
+                )
+            }
+            drawPath(
+                path = upperLeafContour,
+                brush = Brush.linearGradient(
+                    colors = listOf(primaryTint.copy(alpha = 0.08f), Color.Transparent),
+                    start = Offset(w * 0.95f, 0f),
+                    end = Offset(w * 0.60f, h * 0.45f)
+                )
             )
 
             val leafStem = Path().apply {
@@ -150,7 +521,7 @@ fun OrganicLeafBackground(
             drawPath(
                 path = leafStem,
                 color = primaryTint,
-                style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
             )
 
             val lowerVein = Path().apply {
@@ -164,7 +535,7 @@ fun OrganicLeafBackground(
             drawPath(
                 path = lowerVein,
                 color = tertiaryTint,
-                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
             )
         }
         content()
@@ -180,17 +551,26 @@ fun RuntimeBadgePill(
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(50),
-        color = accent.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.45f))
+        color = Color.Transparent,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.42f))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            modifier = Modifier
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            accent.copy(alpha = 0.14f),
+                            accent.copy(alpha = 0.06f)
+                        )
+                    )
+                )
+                .padding(horizontal = 8.dp, vertical = 2.5.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(7.dp)
+                    .size(6.dp)
                     .clip(CircleShape)
                     .background(accent)
             )
@@ -198,10 +578,10 @@ fun RuntimeBadgePill(
                 text = "${runtime.displayName} • ${runtime.shortBadge}",
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontFamily = JetBrainsMonoFontFamily,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Medium
                 ),
                 color = accent,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
         }
@@ -231,11 +611,20 @@ fun PowerProfilePill(
     ) {
         Surface(
             shape = RoundedCornerShape(50),
-            color = color.copy(alpha = 0.14f),
-            border = BorderStroke(1.dp, color.copy(alpha = 0.45f))
+            color = Color.Transparent,
+            border = BorderStroke(1.dp, color.copy(alpha = 0.42f))
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                modifier = Modifier
+                    .background(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(
+                                color.copy(alpha = 0.14f),
+                                color.copy(alpha = 0.06f)
+                            )
+                        )
+                    )
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -247,14 +636,15 @@ fun PowerProfilePill(
                     },
                     contentDescription = profile.displayName,
                     tint = color,
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(13.dp)
                 )
                 Text(
                     text = profile.displayName,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Medium
+                    ),
                     color = color,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
@@ -269,7 +659,7 @@ fun PowerProfilePill(
 private fun TopBarCircularButton(
     onClick: () -> Unit,
     visualSize: Dp,
-    containerColor: Color,
+    containerBrush: Brush,
     border: BorderStroke?,
     testTag: String,
     content: @Composable () -> Unit
@@ -286,10 +676,15 @@ private fun TopBarCircularButton(
         Surface(
             modifier = Modifier.size(visualSize),
             shape = CircleShape,
-            color = containerColor,
+            color = Color.Transparent,
             border = border
         ) {
-            Box(contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(brush = containerBrush),
+                contentAlignment = Alignment.Center
+            ) {
                 content()
             }
         }
@@ -320,7 +715,7 @@ fun LeafyCleanTopBar(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.94f))
+            .background(brush = livingTopBarBrush())
             .windowInsetsPadding(
                 WindowInsets.safeDrawing.only(
                     WindowInsetsSides.Top + WindowInsetsSides.Horizontal
@@ -330,24 +725,24 @@ fun LeafyCleanTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 4.dp),
+                .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             if (isChatFrontScreen) {
-                // Left: Organic Canopy Drawer button (48dp touch target, 38dp visual circle)
+                // Left: Organic Canopy Drawer button (48dp touch target, 36dp visual circle)
                 TopBarCircularButton(
                     onClick = onOpenCanopyDrawer,
-                    visualSize = 38.dp,
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                    visualSize = 36.dp,
+                    containerBrush = livingSecondaryButtonBrush(),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
                     testTag = "open_canopy_drawer_button"
                 ) {
                     Icon(
                         imageVector = Icons.Default.Menu,
                         contentDescription = "Open Leafy menu drawer",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(19.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
@@ -356,27 +751,38 @@ fun LeafyCleanTopBar(
                     modifier = Modifier
                         .weight(1f)
                         .sizeIn(minHeight = 48.dp)
-                        .clip(RoundedCornerShape(50))
+                        .clip(RoundedCornerShape(22.dp))
                         .clickable(onClick = onOpenModelSwitcher)
                         .testTag("top_model_switcher_pill"),
                     contentAlignment = Alignment.Center
                 ) {
+                    val hasActiveModel = activeModel != null && activeModel.isInstalled
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.92f),
-                        shadowElevation = 2.dp,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                        shape = RoundedCornerShape(22.dp),
+                        color = Color.Transparent,
+                        shadowElevation = 1.dp,
+                        border = BorderStroke(
+                            1.dp,
+                            if (hasActiveModel) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                        )
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                .background(
+                                    brush = if (hasActiveModel) {
+                                        livingActiveItemBrush(MaterialTheme.colorScheme.primary)
+                                    } else {
+                                        livingSurfaceCardBrush()
+                                    }
+                                )
+                                .padding(horizontal = 9.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            val hasActiveModel = activeModel != null && activeModel.isInstalled
-                            val dotColor = if (hasActiveModel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+                            val dotColor = if (hasActiveModel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
                             val titleText = if (hasActiveModel) activeModel.name else "No ${activeRuntime.fileExtensions.first()} Model"
                             val subtitleText = if (hasActiveModel) {
                                 "${activeModel.quantization} • ${activeModel.sizeMb} MB • ${activeRuntime.displayName}"
@@ -386,7 +792,7 @@ fun LeafyCleanTopBar(
 
                             Box(
                                 modifier = Modifier
-                                    .size(8.dp)
+                                    .size(7.dp)
                                     .clip(CircleShape)
                                     .background(dotColor)
                             )
@@ -394,12 +800,19 @@ fun LeafyCleanTopBar(
                                 modifier = Modifier.weight(1f),
                                 horizontalAlignment = Alignment.Start
                             ) {
+                                val modelTitleStyle = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = if (hasActiveModel) FontWeight.SemiBold else FontWeight.Medium
+                                )
                                 Text(
                                     text = titleText,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    maxLines = 1,
+                                    style = if (hasActiveModel) importantTextStyle(modelTitleStyle) else modelTitleStyle,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
-                                    color = if (hasActiveModel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = if (hasActiveModel) {
+                                        importantTextColor(MaterialTheme.colorScheme.onSurface)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
                                 )
                                 Text(
                                     text = subtitleText,
@@ -413,7 +826,7 @@ fun LeafyCleanTopBar(
                                 imageVector = Icons.Default.ExpandMore,
                                 contentDescription = "Switch local model",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                         }
                     }
@@ -425,11 +838,16 @@ fun LeafyCleanTopBar(
                     horizontalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
                     val runtimeColor = runtimeAccentColor(activeRuntime)
-                    // Dedicated Runtime Engine Menu Button (48dp touch target, 38dp visual circle)
+                    // Dedicated Runtime Engine Menu Button (48dp touch target, 36dp visual circle)
                     TopBarCircularButton(
                         onClick = onOpenRuntimeSwitcher,
-                        visualSize = 38.dp,
-                        containerColor = runtimeColor.copy(alpha = 0.16f),
+                        visualSize = 36.dp,
+                        containerBrush = Brush.linearGradient(
+                            colors = listOf(
+                                runtimeColor.copy(alpha = 0.18f),
+                                runtimeColor.copy(alpha = 0.07f)
+                            )
+                        ),
                         border = BorderStroke(1.dp, runtimeColor.copy(alpha = 0.45f)),
                         testTag = "top_runtime_switcher_button"
                     ) {
@@ -437,51 +855,51 @@ fun LeafyCleanTopBar(
                             imageVector = Icons.Default.Memory,
                             contentDescription = "Switch Inference Runtime (${activeRuntime.displayName})",
                             tint = runtimeColor,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(17.dp)
                         )
                     }
 
-                    // Power Modes & Studio Controls Button (48dp touch target, 38dp visual circle)
+                    // Power Modes & Studio Controls Button (48dp touch target, 36dp visual circle)
                     TopBarCircularButton(
                         onClick = onOpenSpecialCommandMenu,
-                        visualSize = 38.dp,
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                        visualSize = 36.dp,
+                        containerBrush = livingBrightButtonBrush(),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)),
                         testTag = "open_special_menu_button"
                     ) {
                         Icon(
                             imageVector = Icons.Default.Tune,
                             contentDescription = "Power Modes & Studio Controls",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(18.dp)
+                            tint = livingBrightButtonContentColor(),
+                            modifier = Modifier.size(17.dp)
                         )
                     }
 
-                    // Settings & Eco Studio Button (48dp touch target, 38dp visual circle)
+                    // Settings & Eco Studio Button (48dp touch target, 36dp visual circle)
                     TopBarCircularButton(
                         onClick = onOpenSettingsScreen,
-                        visualSize = 38.dp,
-                        containerColor = if (isSettingsActive) {
-                            MaterialTheme.colorScheme.primaryContainer
+                        visualSize = 36.dp,
+                        containerBrush = if (isSettingsActive) {
+                            livingBrightButtonBrush()
                         } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
+                            livingSecondaryButtonBrush()
                         },
                         border = BorderStroke(
                             if (isSettingsActive) 1.5.dp else 1.dp,
-                            if (isSettingsActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                            if (isSettingsActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)
                         ),
                         testTag = "open_settings_screen_button"
                     ) {
                         Icon(
                             imageVector = Icons.Default.Settings,
                             contentDescription = "Settings & Eco Studio",
-                            tint = if (isSettingsActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(18.dp)
+                            tint = if (isSettingsActive) livingBrightButtonContentColor() else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(17.dp)
                         )
                     }
                 }
             } else {
-                // Secondary Screen Header with clean Back to Chat button (48dp touch target, 42dp visual circle)
+                // Secondary Screen Header with clean Back to Chat button (48dp touch target, 38dp visual circle)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -490,30 +908,31 @@ fun LeafyCleanTopBar(
                     Row(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(end = 8.dp),
+                            .padding(end = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         TopBarCircularButton(
                             onClick = onNavigateBackToChat,
-                            visualSize = 42.dp,
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                            visualSize = 38.dp,
+                            containerBrush = livingSecondaryButtonBrush(),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
                             testTag = "back_to_chat_button"
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Back to Chat",
-                                tint = MaterialTheme.colorScheme.onSurface
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
 
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = secondaryScreenTitle,
-                                style = MaterialTheme.typography.titleLarge,
-                                color = MaterialTheme.colorScheme.onBackground,
-                                maxLines = 1,
+                                style = importantTextStyle(MaterialTheme.typography.titleLarge),
+                                color = importantTextColor(MaterialTheme.colorScheme.onBackground),
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
@@ -543,24 +962,27 @@ fun LeafyCleanTopBar(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.tertiaryContainer,
-                    shadowElevation = 2.dp
+                    color = Color.Transparent,
+                    shadowElevation = 1.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f))
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .background(brush = livingTertiaryHeroBrush())
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.EnergySavingsLeaf,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(13.dp)
                         )
                         Text(
                             text = statusBanner.orEmpty(),
@@ -680,4 +1102,3 @@ fun LiveTpsSparklineCanvas(
         )
     }
 }
-

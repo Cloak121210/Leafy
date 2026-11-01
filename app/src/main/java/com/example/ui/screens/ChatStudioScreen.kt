@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -87,6 +88,17 @@ import com.example.data.AiRuntime
 import com.example.data.MessageNodeEntity
 import com.example.engine.InferenceTelemetryPhase
 import com.example.ui.components.MarkdownText
+import com.example.ui.components.importantTextColor
+import com.example.ui.components.importantTextStyle
+import com.example.ui.components.livingBrightButtonBrush
+import com.example.ui.components.livingBrightButtonContentColor
+import com.example.ui.components.livingHeroCardBrush
+import com.example.ui.components.livingMetricBoxBrush
+import com.example.ui.components.livingPrimaryBubbleBrush
+import com.example.ui.components.livingPrimaryBubbleContentColor
+import com.example.ui.components.livingSecondaryButtonBrush
+import com.example.ui.components.livingSecondaryHeroBrush
+import com.example.ui.components.livingSurfaceCardBrush
 import com.example.ui.components.runtimeAccentColor
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.viewmodel.BranchedMessageItem
@@ -169,7 +181,6 @@ fun ChatStudioScreen(
         val messageAdded = currentCount > previousMessageCount
         previousMessageCount = currentCount
         if (messageAdded && !isStreaming) {
-            // If a user prompt was just added, re-anchor to tail
             val lastRole = uiState.activeBranchMessages.lastOrNull()?.node?.role
             if (lastRole == "USER") {
                 userAnchoredToTail = true
@@ -207,7 +218,6 @@ fun ChatStudioScreen(
         }
     }
 
-    // Real Android SpeechRecognizer Launcher (no fake fallback popup)
     val speechRecognizerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -244,32 +254,34 @@ fun ChatStudioScreen(
                 .fillMaxSize()
                 .widthIn(max = 720.dp)
         ) {
-            // Status bar showing active runtime, live TPS readout, persona, pinned RAG count & battery telemetry
+            // Compact status pill showing active runtime, live TPS readout, persona, pinned RAG count & battery telemetry
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                    .padding(horizontal = 12.dp, vertical = 1.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Surface(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(50))
+                        .clip(RoundedCornerShape(20.dp))
                         .clickable(onClick = onOpenSpecialMenu)
                         .testTag("chat_context_whisper_pill"),
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.85f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Transparent,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                        modifier = Modifier
+                            .background(brush = livingSecondaryButtonBrush())
+                            .padding(horizontal = 10.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.EnergySavingsLeaf,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(13.dp)
+                            modifier = Modifier.size(12.dp)
                         )
                         val tpsSuffix = when {
                             uiState.streamingPreview != null && uiState.streamingPreview.phase == InferenceTelemetryPhase.PREFILLING ->
@@ -282,7 +294,7 @@ fun ChatStudioScreen(
                         }
                         val battLabel = if (uiState.telemetry.batteryPercent in 0..100) "${uiState.telemetry.batteryPercent}%" else "not measured"
                         Text(
-                            text = "${uiState.activeRuntime.displayName}$tpsSuffix • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG pinned • $battLabel",
+                            text = "${uiState.activeRuntime.displayName}$tpsSuffix • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG • $battLabel",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -299,8 +311,8 @@ fun ChatStudioScreen(
                     .weight(1f)
                     .fillMaxWidth()
                     .testTag("chat_messages_list"),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (uiState.conversations.isEmpty()) {
                     item(key = "empty_session_history_banner") {
@@ -308,22 +320,23 @@ fun ChatStudioScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("empty_session_history_banner"),
-                            shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color.Transparent,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    .background(brush = livingSurfaceCardBrush())
+                                    .padding(horizontal = 12.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.EnergySavingsLeaf,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(14.dp)
                                 )
                                 Text(
                                     text = "No offline conversation threads saved yet. Send a message below to start your first local session.",
@@ -334,303 +347,322 @@ fun ChatStudioScreen(
                         }
                     }
                 }
-            if (uiState.activeModel == null) {
-                item(key = "no_model_warning_banner") {
-                    val hasOtherLoadedModels = uiState.localModels.isNotEmpty()
-                    val requiredExt = uiState.activeRuntime.fileExtensions.joinToString(" or ")
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("no_model_banner"),
-                        shape = RoundedCornerShape(22.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
-                        ),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f))
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(18.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+
+                if (uiState.activeModel == null) {
+                    item(key = "no_model_warning_banner") {
+                        val hasOtherLoadedModels = uiState.localModels.isNotEmpty()
+                        val requiredExt = uiState.activeRuntime.fileExtensions.joinToString(" or ")
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("no_model_banner"),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color.Transparent
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f))
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(brush = livingSecondaryHeroBrush())
+                                    .padding(horizontal = 13.dp, vertical = 11.dp),
+                                verticalArrangement = Arrangement.spacedBy(7.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.FolderOpen,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = if (hasOtherLoadedModels) {
-                                            "No ${uiState.activeRuntime.fileExtensions.first()} Model Loaded for ${uiState.activeRuntime.displayName}"
-                                        } else {
-                                            "No Local AI Model Loaded"
-                                        },
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                                    )
-                                    Text(
-                                        text = if (hasOtherLoadedModels) {
-                                            "${uiState.activeRuntime.displayName} requires $requiredExt weights, while your loaded model '${uiState.localModels.first().name}' is ${uiState.localModels.first().quantization}. Load a $requiredExt file or switch back to a compatible runtime."
-                                        } else {
-                                            "Load a local model weight file (.gguf, .pte, .tmac, or .bitnet) from your device storage to run 100% offline inference."
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
-                                    )
-                                }
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = onNavigateToModels,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("load_model_cta_button")
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.FolderOpen,
                                         contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(20.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(if (hasOtherLoadedModels) "Load ${uiState.activeRuntime.fileExtensions.first()} File" else "Load Local Model from Device")
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (hasOtherLoadedModels) {
+                                                "No ${uiState.activeRuntime.fileExtensions.first()} Model Loaded for ${uiState.activeRuntime.displayName}"
+                                            } else {
+                                                "No Local AI Model Loaded"
+                                            },
+                                            style = importantTextStyle(MaterialTheme.typography.titleMedium),
+                                            color = importantTextColor(MaterialTheme.colorScheme.onSecondaryContainer)
+                                        )
+                                        Text(
+                                            text = if (hasOtherLoadedModels) {
+                                                "${uiState.activeRuntime.displayName} requires $requiredExt weights, while your loaded model '${uiState.localModels.first().name}' is ${uiState.localModels.first().quantization}. Load a $requiredExt file or switch back to a compatible runtime."
+                                            } else {
+                                                "Load a local model weight file (.gguf, .pte, .tmac, or .bitnet) from your device storage to run 100% offline inference."
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.90f)
+                                        )
+                                    }
                                 }
-                                if (hasOtherLoadedModels) {
-                                    TextButton(
-                                        onClick = onOpenRuntimeSwitcher,
-                                        modifier = Modifier.testTag("switch_compatible_runtime_button")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Button(
+                                        onClick = onNavigateToModels,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color.Transparent,
+                                            contentColor = livingBrightButtonContentColor()
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(50))
+                                            .background(brush = livingBrightButtonBrush())
+                                            .testTag("load_model_cta_button")
                                     ) {
-                                        Text("Switch Runtime")
+                                        Icon(
+                                            imageVector = Icons.Default.FolderOpen,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text(
+                                            text = if (hasOtherLoadedModels) "Load ${uiState.activeRuntime.fileExtensions.first()} File" else "Load Local Model from Device",
+                                            style = MaterialTheme.typography.labelLarge
+                                        )
+                                    }
+                                    if (hasOtherLoadedModels) {
+                                        TextButton(
+                                            onClick = onOpenRuntimeSwitcher,
+                                            modifier = Modifier.testTag("switch_compatible_runtime_button")
+                                        ) {
+                                            Text("Switch Runtime")
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                } else if (uiState.activeBranchMessages.isEmpty()) {
+                    item(key = "model_ready_welcome_card") {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("model_ready_card"),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color.Transparent
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(brush = livingHeroCardBrush())
+                                    .padding(horizontal = 13.dp, vertical = 11.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "${uiState.activeModel.name} Loaded",
+                                        style = importantTextStyle(MaterialTheme.typography.titleMedium),
+                                        color = importantTextColor(MaterialTheme.colorScheme.onSurface)
+                                    )
+                                }
+                                Text(
+                                    text = "Local weights (${uiState.activeModel.quantization}, ${uiState.activeModel.sizeMb} MB) are mounted for ${uiState.activeRuntime.displayName}. Type a message below to start offline inference.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
-            } else if (uiState.activeBranchMessages.isEmpty()) {
-                item(key = "model_ready_welcome_card") {
-                    Card(
+
+                items(
+                    items = uiState.activeBranchMessages,
+                    key = { it.node.id }
+                ) { branchedItem ->
+                    BranchedMessageBubble(
+                        item = branchedItem,
+                        isSpeaking = uiState.speakingMessageId == branchedItem.node.id,
+                        onEditClick = {
+                            editingMessageId = branchedItem.node.id
+                            editDraftText = branchedItem.node.content
+                        },
+                        onRegenerateBranch = { onRegenerateBranch(branchedItem.node) },
+                        onSwitchBranch = onSwitchSiblingBranch,
+                        onSpeakClick = {
+                            onToggleSpeak(branchedItem.node.id, branchedItem.node.content)
+                        }
+                    )
+                }
+
+                uiState.streamingPreview?.let { preview ->
+                    item(key = "streaming_preview") {
+                        StreamingAssistantCard(
+                            preview = preview,
+                            onStop = onStopStreaming
+                        )
+                    }
+                }
+            }
+
+            // Floating Organic Capsule Composer Bar (with Living Gradient Surface)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(26.dp),
+                    color = Color.Transparent,
+                    shadowElevation = 3.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.32f))
+                ) {
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("model_ready_card"),
-                        shape = RoundedCornerShape(22.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                        ),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                            .background(brush = livingSurfaceCardBrush())
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.padding(18.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        IconButton(
+                            onClick = onOpenSpecialMenu,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("composer_special_menu_button")
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(brush = livingSecondaryButtonBrush()),
+                                contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = "Open power mode & persona controls",
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(17.dp)
                                 )
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = promptInput,
+                            onValueChange = { promptInput = it },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("chat_prompt_input"),
+                            placeholder = {
                                 Text(
-                                    text = "${uiState.activeModel.name} Loaded",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    text = "Message ${uiState.activeModel?.name ?: "Leafy"} offline…",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            maxLines = 4,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedBorderColor = Color.Transparent,
+                                unfocusedBorderColor = Color.Transparent
+                            )
+                        )
+
+                        IconButton(
+                            onClick = {
+                                val hasAudioPerm = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasAudioPerm) {
+                                    try {
+                                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                            putExtra(
+                                                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                                                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                                            )
+                                            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                                        }
+                                        speechRecognizerLauncher.launch(intent)
+                                    } catch (_: Exception) {}
+                                } else {
+                                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .testTag("voice_dictation_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = "Offline voice input",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+
+                        val canSend = promptInput.isNotBlank() && uiState.streamingPreview == null
+                        IconButton(
+                            onClick = {
+                                if (promptInput.isNotBlank()) {
+                                    onSendPrompt(promptInput)
+                                    promptInput = ""
+                                }
+                            },
+                            enabled = canSend,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("send_prompt_button")
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .then(
+                                        if (canSend) {
+                                            Modifier.background(brush = livingBrightButtonBrush())
+                                        } else {
+                                            Modifier.background(brush = livingSecondaryButtonBrush())
+                                        }
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Send prompt",
+                                    tint = if (canSend) {
+                                        livingBrightButtonContentColor()
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                                    },
+                                    modifier = Modifier.size(17.dp)
                                 )
                             }
-                            Text(
-                                text = "Local weights (${uiState.activeModel.quantization}, ${uiState.activeModel.sizeMb} MB) are mounted for ${uiState.activeRuntime.displayName}. Type a message below to start offline inference.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
                         }
                     }
                 }
             }
-
-            items(
-                items = uiState.activeBranchMessages,
-                key = { it.node.id }
-            ) { branchedItem ->
-                BranchedMessageBubble(
-                    item = branchedItem,
-                    isSpeaking = uiState.speakingMessageId == branchedItem.node.id,
-                    onEditClick = {
-                        editingMessageId = branchedItem.node.id
-                        editDraftText = branchedItem.node.content
-                    },
-                    onRegenerateBranch = { onRegenerateBranch(branchedItem.node) },
-                    onSwitchBranch = onSwitchSiblingBranch,
-                    onSpeakClick = {
-                        onToggleSpeak(branchedItem.node.id, branchedItem.node.content)
-                    }
-                )
-            }
-
-            uiState.streamingPreview?.let { preview ->
-                item(key = "streaming_preview") {
-                    StreamingAssistantCard(
-                        preview = preview,
-                        onStop = onStopStreaming
-                    )
-                }
-            }
-        }
-
-        // Floating Organic Capsule Composer Bar
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp)
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(30.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLowest,
-                shadowElevation = 4.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    IconButton(
-                        onClick = onOpenSpecialMenu,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("composer_special_menu_button")
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Tune,
-                                contentDescription = "Open power mode & persona controls",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = promptInput,
-                        onValueChange = { promptInput = it },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("chat_prompt_input"),
-                        placeholder = {
-                            Text(
-                                text = "Message ${uiState.activeModel?.name ?: "Leafy"} offline…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        },
-                        maxLines = 4,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedBorderColor = Color.Transparent,
-                            unfocusedBorderColor = Color.Transparent
-                        )
-                    )
-
-                    IconButton(
-                        onClick = {
-                            val hasAudioPerm = ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.RECORD_AUDIO
-                            ) == PackageManager.PERMISSION_GRANTED
-                            if (hasAudioPerm) {
-                                try {
-                                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                        putExtra(
-                                            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                                            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-                                        )
-                                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                                    }
-                                    speechRecognizerLauncher.launch(intent)
-                                } catch (_: Exception) {}
-                            } else {
-                                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            }
-                        },
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .testTag("voice_dictation_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Mic,
-                            contentDescription = "Offline voice input",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            if (promptInput.isNotBlank()) {
-                                onSendPrompt(promptInput)
-                                promptInput = ""
-                            }
-                        },
-                        enabled = promptInput.isNotBlank() && uiState.streamingPreview == null,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("send_prompt_button")
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (promptInput.isNotBlank() && uiState.streamingPreview == null) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.surfaceContainerHigh
-                                    }
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Send prompt",
-                                tint = if (promptInput.isNotBlank() && uiState.streamingPreview == null) {
-                                    MaterialTheme.colorScheme.onPrimary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
         }
     }
 
     editingMessageNode?.let { targetNode ->
         AlertDialog(
             onDismissRequest = { editingMessageId = null },
+            containerColor = MaterialTheme.colorScheme.surface,
             title = {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -641,13 +673,17 @@ fun ChatStudioScreen(
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary
                     )
-                    Text("Edit & Fork Conversation Branch")
+                    Text(
+                        text = "Edit & Fork Conversation Branch",
+                        style = importantTextStyle(MaterialTheme.typography.titleMedium),
+                        color = importantTextColor(MaterialTheme.colorScheme.onSurface)
+                    )
                 }
             },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         text = "Editing this prompt forks a non-destructive branch using ${uiState.activeRuntime.displayName} (${uiState.activeModel?.name ?: "No model"}).",
@@ -672,7 +708,14 @@ fun ChatStudioScreen(
                         onEditAndBranchMessage(targetNode, editDraftText)
                         editingMessageId = null
                     },
-                    modifier = Modifier.testTag("confirm_fork_branch_button")
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = livingBrightButtonContentColor()
+                    ),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(brush = livingBrightButtonBrush())
+                        .testTag("confirm_fork_branch_button")
                 ) {
                     Text("Fork & Generate")
                 }
@@ -704,19 +747,22 @@ private fun BranchedMessageBubble(
     var showTelemetryAndRagDetails by rememberSaveable(node.id) { mutableStateOf(false) }
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val bubbleMaxWidth = minOf(maxWidth * 0.85f, 560.dp).coerceAtLeast(240.dp)
+        val bubbleMaxWidth = minOf(maxWidth * 0.86f, 560.dp).coerceAtLeast(240.dp)
         Column(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
             if (item.totalSiblings > 1) {
                 Surface(
-                    modifier = Modifier.padding(bottom = 5.dp),
+                    modifier = Modifier.padding(bottom = 3.dp),
                     shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
+                    color = Color.Transparent,
+                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f))
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp),
+                        modifier = Modifier
+                            .background(brush = livingSecondaryButtonBrush())
+                            .padding(horizontal = 4.dp, vertical = 0.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
@@ -733,7 +779,7 @@ private fun BranchedMessageBubble(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                                 contentDescription = "Previous branch",
                                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(15.dp)
+                                modifier = Modifier.size(14.dp)
                             )
                         }
                         Text(
@@ -741,7 +787,7 @@ private fun BranchedMessageBubble(
                                 if (node.branchNote.isNotBlank()) " • ${node.branchNote}" else "",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Medium
                         )
                         IconButton(
                             onClick = {
@@ -756,7 +802,7 @@ private fun BranchedMessageBubble(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                 contentDescription = "Next branch",
                                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(15.dp)
+                                modifier = Modifier.size(14.dp)
                             )
                         }
                     }
@@ -765,250 +811,271 @@ private fun BranchedMessageBubble(
 
             Card(
                 modifier = Modifier.widthIn(max = bubbleMaxWidth),
-            shape = RoundedCornerShape(
-                topStart = 24.dp,
-                topEnd = 24.dp,
-                bottomStart = if (isUser) 24.dp else 6.dp,
-                bottomEnd = if (isUser) 6.dp else 24.dp
-            ),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isUser) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerLowest
-                }
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = if (isUser) 1.dp else 2.dp),
-            border = if (!isUser) {
-                BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
-            } else null
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                MarkdownText(
-                    markdown = node.content,
-                    isUser = isUser
-                )
-
-                AnimatedVisibility(visible = !isUser && showTelemetryAndRagDetails) {
-                    val decodeLabel = if (node.tokensPerSec > 0f) "${"%.1f".format(node.tokensPerSec)} t/s" else "not measured"
-                    val itlLabel = if (node.tokensPerSec > 0f) "${"%.1f".format(1000f / node.tokensPerSec)} ms/tok" else "not measured"
-                    val ttftLabel = if (node.ttftMs > 0) "${node.ttftMs} ms" else "not measured"
-                    val tokensLabel = if (node.tokenCount > 0) "${node.tokenCount} tok" else "not measured"
-                    val energyLabel = if (node.energyMicroWh > 0f) {
-                        val uWhPerTok = if (node.tokenCount > 0) node.energyMicroWh / node.tokenCount else 0f
-                        "${"%.1f".format(node.energyMicroWh)} µWh (${"%.2f".format(uWhPerTok)} µWh/tok)"
+                shape = RoundedCornerShape(
+                    topStart = 20.dp,
+                    topEnd = 20.dp,
+                    bottomStart = if (isUser) 20.dp else 5.dp,
+                    bottomEnd = if (isUser) 5.dp else 20.dp
+                ),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color.Transparent
+                ),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (isUser) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
                     } else {
-                        "not measured"
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
                     }
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Text(
-                                text = "Engine: ${runtime.displayName} (${node.quantization.ifBlank { "not measured" }}) • Model: ${node.modelName.ifBlank { "not measured" }}",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = JetBrainsMonoFontFamily,
-                                    fontWeight = FontWeight.Bold
-                                ),
-                                color = runtimeAccentColor(runtime)
-                            )
-                            Text(
-                                text = "Decode: $decodeLabel • ITL: $itlLabel • TTFT: $ttftLabel",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = JetBrainsMonoFontFamily
-                                ),
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Tokens: $tokensLabel • Energy: $energyLabel • Mode: ${node.powerProfileId}",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = JetBrainsMonoFontFamily
-                                ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            if (citedTitles.isNotEmpty()) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PushPin,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.tertiary,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                    Text(
-                                        text = "RAG Sources: ${citedTitles.joinToString(", ")}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.tertiary
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (isUser) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
-                                .clip(RoundedCornerShape(50))
-                                .clickable(onClick = onEditClick)
-                                .padding(horizontal = 8.dp, vertical = 6.dp)
-                                .testTag("edit_branch_user_${node.id}"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = "Edit and branch",
-                                tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f),
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Text(
-                                text = "Edit & Branch",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
-                            )
-                        }
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .padding(end = 6.dp)
-                                .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
-                                .clip(RoundedCornerShape(50))
-                                .clickable { showTelemetryAndRagDetails = !showTelemetryAndRagDetails }
-                                .padding(vertical = 6.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(runtimeAccentColor(runtime))
-                            )
-                            val nodeTpsText = if (node.tokensPerSec > 0f) {
-                                "${"%.1f".format(node.tokensPerSec)} t/s"
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .background(
+                            brush = if (isUser) {
+                                livingPrimaryBubbleBrush()
                             } else {
-                                "not measured"
+                                livingSurfaceCardBrush()
                             }
-                            Text(
-                                text = "${runtime.displayName} • $nodeTpsText" +
-                                    if (node.tokenCount > 0) " • ${node.tokenCount} tok" else "",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = JetBrainsMonoFontFamily
-                                ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            if (citedTitles.isNotEmpty()) {
-                                Icon(
-                                    imageVector = Icons.Default.PushPin,
-                                    contentDescription = "RAG cited",
-                                    tint = MaterialTheme.colorScheme.tertiary,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                            }
-                            Icon(
-                                imageVector = Icons.Default.Info,
-                                contentDescription = "Toggle telemetry details",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                                modifier = Modifier.size(13.dp)
-                            )
-                        }
+                        )
+                        .padding(horizontal = 13.dp, vertical = 9.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    MarkdownText(
+                        markdown = node.content,
+                        isUser = isUser
+                    )
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    AnimatedVisibility(visible = !isUser && showTelemetryAndRagDetails) {
+                        val decodeLabel = if (node.tokensPerSec > 0f) "${"%.1f".format(node.tokensPerSec)} t/s" else "not measured"
+                        val itlLabel = if (node.tokensPerSec > 0f) "${"%.1f".format(1000f / node.tokensPerSec)} ms/tok" else "not measured"
+                        val ttftLabel = if (node.ttftMs > 0) "${node.ttftMs} ms" else "not measured"
+                        val tokensLabel = if (node.tokenCount > 0) "${node.tokenCount} tok" else "not measured"
+                        val energyLabel = if (node.energyMicroWh > 0f) {
+                            val uWhPerTok = if (node.tokenCount > 0) node.energyMicroWh / node.tokenCount else 0f
+                            "${"%.1f".format(node.energyMicroWh)} µWh (${"%.2f".format(uWhPerTok)} µWh/tok)"
+                        } else {
+                            "not measured"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.Transparent,
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
                         ) {
-                            Surface(
+                            Column(
                                 modifier = Modifier
-                                    .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
-                                    .clip(RoundedCornerShape(50))
-                                    .clickable(onClick = onSpeakClick)
-                                    .testTag("tts_speak_button_${node.id}"),
-                                shape = RoundedCornerShape(50),
-                                color = if (isSpeaking) {
-                                    MaterialTheme.colorScheme.secondaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainer
-                                }
+                                    .fillMaxWidth()
+                                    .background(brush = livingMetricBoxBrush())
+                                    .padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = if (isSpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
-                                        contentDescription = "Speak response offline",
-                                        tint = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.size(13.dp)
-                                    )
-                                    if (isSpeaking) {
+                                Text(
+                                    text = "Engine: ${runtime.displayName} (${node.quantization.ifBlank { "not measured" }}) • Model: ${node.modelName.ifBlank { "not measured" }}",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFontFamily,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    color = runtimeAccentColor(runtime)
+                                )
+                                Text(
+                                    text = "Decode: $decodeLabel • ITL: $itlLabel • TTFT: $ttftLabel",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFontFamily
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Tokens: $tokensLabel • Energy: $energyLabel • Mode: ${node.powerProfileId}",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFontFamily
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (citedTitles.isNotEmpty()) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PushPin,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.tertiary,
+                                            modifier = Modifier.size(11.dp)
+                                        )
                                         Text(
-                                            text = "Stop",
-                                            style = MaterialTheme.typography.labelSmall
+                                            text = "RAG Sources: ${citedTitles.joinToString(", ")}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.tertiary
                                         )
                                     }
                                 }
                             }
+                        }
+                    }
 
-                            Surface(
+                    if (isUser) {
+                        val userBubbleTextColor = livingPrimaryBubbleContentColor()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            Row(
                                 modifier = Modifier
-                                    .sizeIn(minWidth = 48.dp, minHeight = 36.dp)
+                                    .sizeIn(minWidth = 48.dp, minHeight = 32.dp)
                                     .clip(RoundedCornerShape(50))
-                                    .clickable(onClick = onRegenerateBranch)
-                                    .testTag("fork_assistant_branch_${node.id}"),
-                                shape = RoundedCornerShape(50),
-                                color = MaterialTheme.colorScheme.surfaceContainer
+                                    .clickable(onClick = onEditClick)
+                                    .padding(horizontal = 7.dp, vertical = 4.dp)
+                                    .testTag("edit_branch_user_${node.id}"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "Edit and branch",
+                                    tint = userBubbleTextColor.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Text(
+                                    text = "Edit & Branch",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = userBubbleTextColor.copy(alpha = 0.88f)
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .padding(end = 4.dp)
+                                    .sizeIn(minWidth = 48.dp, minHeight = 32.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable { showTelemetryAndRagDetails = !showTelemetryAndRagDetails }
+                                    .padding(vertical = 4.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(runtimeAccentColor(runtime))
+                                )
+                                val nodeTpsText = if (node.tokensPerSec > 0f) {
+                                    "${"%.1f".format(node.tokensPerSec)} t/s"
+                                } else {
+                                    "not measured"
+                                }
+                                Text(
+                                    text = "${runtime.displayName} • $nodeTpsText" +
+                                        if (node.tokenCount > 0) " • ${node.tokenCount} tok" else "",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFontFamily
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (citedTitles.isNotEmpty()) {
                                     Icon(
-                                        imageVector = Icons.Default.Refresh,
-                                        contentDescription = "Fork branch response",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(13.dp)
+                                        imageVector = Icons.Default.PushPin,
+                                        contentDescription = "RAG cited",
+                                        tint = MaterialTheme.colorScheme.tertiary,
+                                        modifier = Modifier.size(11.dp)
                                     )
-                                    Text(
-                                        text = "Branch",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Toggle telemetry details",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Surface(
+                                    modifier = Modifier
+                                        .sizeIn(minWidth = 48.dp, minHeight = 32.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .clickable(onClick = onSpeakClick)
+                                        .testTag("tts_speak_button_${node.id}"),
+                                    shape = RoundedCornerShape(50),
+                                    color = Color.Transparent,
+                                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .background(
+                                                brush = if (isSpeaking) {
+                                                    livingBrightButtonBrush()
+                                                } else {
+                                                    livingSecondaryButtonBrush()
+                                                }
+                                            )
+                                            .padding(horizontal = 9.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isSpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                                            contentDescription = "Speak response offline",
+                                            tint = if (isSpeaking) livingBrightButtonContentColor() else MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        if (isSpeaking) {
+                                            Text(
+                                                text = "Stop",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = livingBrightButtonContentColor()
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Surface(
+                                    modifier = Modifier
+                                        .sizeIn(minWidth = 48.dp, minHeight = 32.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .clickable(onClick = onRegenerateBranch)
+                                        .testTag("fork_assistant_branch_${node.id}"),
+                                    shape = RoundedCornerShape(50),
+                                    color = Color.Transparent,
+                                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .background(brush = livingSecondaryButtonBrush())
+                                            .padding(horizontal = 9.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "Fork branch response",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Text(
+                                            text = "Branch",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
         }
     }
 }
@@ -1025,15 +1092,17 @@ private fun StreamingAssistantCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("live_streaming_telemetry_card"),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
+            containerColor = Color.Transparent
         ),
         border = BorderStroke(1.5.dp, accent)
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier
+                .background(brush = livingSurfaceCardBrush())
+                .padding(horizontal = 13.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             // Top Header: Runtime, Phase Pill, Live Instant/Decode TPS & Stop Button
             Row(
@@ -1048,10 +1117,10 @@ private fun StreamingAssistantCard(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = accent.copy(alpha = 0.16f)
+                        color = accent.copy(alpha = 0.14f)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
@@ -1059,13 +1128,13 @@ private fun StreamingAssistantCard(
                                 imageVector = if (isPrefilling) Icons.Default.Bolt else Icons.Default.Speed,
                                 contentDescription = null,
                                 tint = accent,
-                                modifier = Modifier.size(13.dp)
+                                modifier = Modifier.size(12.dp)
                             )
                             Text(
                                 text = if (isPrefilling) "PREFILL" else "LIVE TPS",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Medium
                                 ),
                                 color = accent
                             )
@@ -1087,12 +1156,14 @@ private fun StreamingAssistantCard(
                         } else {
                             decodeHeaderText
                         },
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontFamily = JetBrainsMonoFontFamily,
-                            fontWeight = FontWeight.Bold
+                        style = importantTextStyle(
+                            MaterialTheme.typography.labelMedium.copy(
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         ),
-                        color = accent,
-                        maxLines = 1,
+                        color = importantTextColor(accent),
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -1104,24 +1175,26 @@ private fun StreamingAssistantCard(
                     Icon(
                         imageVector = Icons.Default.Stop,
                         contentDescription = "Stop generation",
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
                     Text("Stop")
                 }
             }
 
-            // Live Telemetry HUD Strip + Sparkline Waveform
+            // Live Telemetry HUD Strip
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow
+                shape = RoundedCornerShape(11.dp),
+                color = Color.Transparent,
+                border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                        .background(brush = livingMetricBoxBrush())
+                        .padding(horizontal = 9.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),

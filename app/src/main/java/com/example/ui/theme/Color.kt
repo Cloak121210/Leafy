@@ -2,31 +2,31 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Sunlit Botanical Conservatory — Bright & Colorful Light Palette
-val SunlitDewBackground = Color(0xFFF6FBF4)
-val SoftSageSurface = Color(0xFFEAF4E7)
+// Sunlit Botanical Conservatory — Bright & Luminous Light Palette (No dark/dull surfaces)
+val SunlitDewBackground = Color(0xFFF8FFFA)
+val SoftSageSurface = Color(0xFFECFFF3)
 val ElevatedLeafCard = Color(0xFFFFFFFF)
-val BotanicalMistContainer = Color(0xFFDDF0D8)
+val BotanicalMistContainer = Color(0xFFDEFCE8)
 
-val EmeraldPrimary = Color(0xFF1E7E48)
+val EmeraldPrimary = Color(0xFF157A42)
 val OnEmeraldPrimary = Color(0xFFFFFFFF)
-val MintPrimaryContainer = Color(0xFFBFF0CE)
-val OnMintPrimaryContainer = Color(0xFF08391C)
+val MintPrimaryContainer = Color(0xFFB8F8CE)
+val OnMintPrimaryContainer = Color(0xFF063318)
 
-val SunbeamAmberSecondary = Color(0xFFD9821E)
+val SunbeamAmberSecondary = Color(0xFFD47A12)
 val OnSunbeamSecondary = Color(0xFFFFFFFF)
-val SunbeamSecondaryContainer = Color(0xFFFFE7C2)
-val OnSunbeamSecondaryContainer = Color(0xFF422400)
+val SunbeamSecondaryContainer = Color(0xFFFFECB3)
+val OnSunbeamSecondaryContainer = Color(0xFF3E2000)
 
-val DewdropTealTertiary = Color(0xFF157A8C)
+val DewdropTealTertiary = Color(0xFF117688)
 val OnDewdropTertiary = Color(0xFFFFFFFF)
-val DewdropTertiaryContainer = Color(0xFFC4F1F9)
-val OnDewdropTertiaryContainer = Color(0xFF003640)
+val DewdropTertiaryContainer = Color(0xFFC4F6FF)
+val OnDewdropTertiaryContainer = Color(0xFF00353F)
 
-val BotanicalCoralAccent = Color(0xFFE56347)
-val DeepForestInk = Color(0xFF132A1C)
-val MutedMossText = Color(0xFF42614E)
-val LeafVeinOutline = Color(0xFFB5D4BE)
+val BotanicalCoralAccent = Color(0xFFE55A3D)
+val DeepForestInk = Color(0xFF0D2818)
+val MutedMossText = Color(0xFF345743)
+val LeafVeinOutline = Color(0xFFA8DFB8)
 
 // Deep Moss Canopy — Dark Eco Mode Palette
 val DarkMossBackground = Color(0xFF0D1912)
@@ -74,4 +74,42 @@ val RuntimeExecuTorchColor = RuntimeExecuTorchLight
 val EcoProfileGreen = EcoProfileLight
 val BalancedProfileAmber = BalancedProfileLight
 val PerformanceProfileCoral = PerformanceProfileLight
+
+// Living Sunlit Botanical Gradient Tokens (Light Mode — Bright, Luminous Conservatory Everywhere)
+val SunlitMorningSky = Color(0xFFF8FFFB)
+val SunlitCanopyMist = Color(0xFFE8FCEF)
+val SunbeamMeadowWarm = Color(0xFFFFFDE8)
+val SunlitGoldHalo = Color(0xFFFFEE99)
+val ChlorophyllMintGlow = Color(0xFFC8FAD9)
+val DewdropAquaGlow = Color(0xFFD6F9FF)
+
+// Bright Button & Bubble Gradient Tokens (High-luminance sunlit fills with dark ink text)
+val BrightButtonMintStart = Color(0xFF80F5AE)
+val BrightButtonLimeMid = Color(0xFFA8F9C6)
+val BrightButtonSunEnd = Color(0xFFFFF2A6)
+val BrightSecondaryButtonStart = Color(0xFFFFE28A)
+val BrightSecondaryButtonEnd = Color(0xFFFFF6BF)
+val BrightCardMintTint = Color(0xFFECFFF2)
+val BrightCardSunTint = Color(0xFFFFFEEE)
+val BrightCardAquaTint = Color(0xFFECFCFF)
+
+// Important Text Living Gradient Tokens (High-contrast multi-stop botanical gradients)
+val GradientTextLightStart = Color(0xFF0B6E36)
+val GradientTextLightMid = Color(0xFF097586)
+val GradientTextLightEnd = Color(0xFFB55800)
+
+val GradientTextDarkStart = Color(0xFF5CE092)
+val GradientTextDarkMid = Color(0xFF6AD6EA)
+val GradientTextDarkEnd = Color(0xFFFFB963)
+
+// Legacy aliases kept for compatibility
+val LivingEmeraldStart = BrightButtonMintStart
+val LivingEmeraldEnd = BrightButtonLimeMid
+
+// Living Bioluminescent Canopy Gradient Tokens (Dark Mode)
+val DarkCanopyTopGlow = Color(0xFF12271C)
+val DarkBioluminescentMint = Color(0xFF1A3A29)
+val DarkAmberSporeGlow = Color(0xFF2B2416)
+
+
 
