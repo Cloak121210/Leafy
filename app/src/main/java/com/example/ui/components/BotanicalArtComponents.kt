@@ -30,9 +30,8 @@ import androidx.compose.material.icons.filled.EnergySavingsLeaf
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -170,7 +169,7 @@ fun livingTopBarBrush(): Brush {
         Brush.horizontalGradient(
             colors = listOf(
                 SunlitMorningSky,
-                ChlorophyllMintGlow.copy(alpha = 0.78f),
+                ChlorophyllMintGlow,
                 SunbeamMeadowWarm
             )
         )
@@ -282,7 +281,7 @@ fun livingSecondaryButtonBrush(): Brush {
         Brush.horizontalGradient(
             colors = listOf(
                 BrightCardMintTint,
-                ChlorophyllMintGlow.copy(alpha = 0.72f),
+                ChlorophyllMintGlow,
                 SunbeamMeadowWarm
             )
         )
@@ -370,8 +369,8 @@ fun livingActiveItemBrush(accentColor: Color): Brush {
     } else {
         Brush.linearGradient(
             colors = listOf(
-                accentColor.copy(alpha = 0.16f),
-                ChlorophyllMintGlow.copy(alpha = 0.68f),
+                BrightButtonMintStart,
+                ChlorophyllMintGlow,
                 SunbeamMeadowWarm
             )
         )
@@ -706,11 +705,8 @@ fun LeafyCleanTopBar(
     onOpenCanopyDrawer: () -> Unit,
     onNavigateBackToChat: () -> Unit,
     onOpenModelSwitcher: () -> Unit,
-    onOpenRuntimeSwitcher: () -> Unit,
-    onOpenSpecialCommandMenu: () -> Unit,
-    onOpenSettingsScreen: () -> Unit,
-    modifier: Modifier = Modifier,
-    isSettingsActive: Boolean = false
+    onOpenQuickSettingsMenu: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
@@ -832,71 +828,20 @@ fun LeafyCleanTopBar(
                     }
                 }
 
-                // Right: Dedicated Runtime Switcher Button + Power Mode Controls + Settings
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(0.dp)
+                // Right: Single "Three Dots" Button for Quick Settings (48dp touch target, 36dp visual circle)
+                TopBarCircularButton(
+                    onClick = onOpenQuickSettingsMenu,
+                    visualSize = 36.dp,
+                    containerBrush = livingSecondaryButtonBrush(),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)),
+                    testTag = "open_quick_settings_button"
                 ) {
-                    val runtimeColor = runtimeAccentColor(activeRuntime)
-                    // Dedicated Runtime Engine Menu Button (48dp touch target, 36dp visual circle)
-                    TopBarCircularButton(
-                        onClick = onOpenRuntimeSwitcher,
-                        visualSize = 36.dp,
-                        containerBrush = Brush.linearGradient(
-                            colors = listOf(
-                                runtimeColor.copy(alpha = 0.18f),
-                                runtimeColor.copy(alpha = 0.07f)
-                            )
-                        ),
-                        border = BorderStroke(1.dp, runtimeColor.copy(alpha = 0.45f)),
-                        testTag = "top_runtime_switcher_button"
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Memory,
-                            contentDescription = "Switch Inference Runtime (${activeRuntime.displayName})",
-                            tint = runtimeColor,
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
-
-                    // Power Modes & Studio Controls Button (48dp touch target, 36dp visual circle)
-                    TopBarCircularButton(
-                        onClick = onOpenSpecialCommandMenu,
-                        visualSize = 36.dp,
-                        containerBrush = livingBrightButtonBrush(),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)),
-                        testTag = "open_special_menu_button"
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Tune,
-                            contentDescription = "Power Modes & Studio Controls",
-                            tint = livingBrightButtonContentColor(),
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
-
-                    // Settings & Eco Studio Button (48dp touch target, 36dp visual circle)
-                    TopBarCircularButton(
-                        onClick = onOpenSettingsScreen,
-                        visualSize = 36.dp,
-                        containerBrush = if (isSettingsActive) {
-                            livingBrightButtonBrush()
-                        } else {
-                            livingSecondaryButtonBrush()
-                        },
-                        border = BorderStroke(
-                            if (isSettingsActive) 1.5.dp else 1.dp,
-                            if (isSettingsActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)
-                        ),
-                        testTag = "open_settings_screen_button"
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = "Settings & Eco Studio",
-                            tint = if (isSettingsActive) livingBrightButtonContentColor() else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Quick Settings",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             } else {
                 // Secondary Screen Header with clean Back to Chat button (48dp touch target, 38dp visual circle)
@@ -947,7 +892,7 @@ fun LeafyCleanTopBar(
 
                     PowerProfilePill(
                         profile = powerProfile,
-                        onClick = onOpenSpecialCommandMenu
+                        onClick = null
                     )
                 }
             }

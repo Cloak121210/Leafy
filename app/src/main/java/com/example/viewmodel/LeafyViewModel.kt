@@ -21,6 +21,7 @@ import com.example.engine.LocalInferenceEngine
 import com.example.engine.ModelDownloadManager
 import com.example.engine.OfflineVoiceHelper
 import com.example.engine.TpsTelemetrySnapshot
+import com.example.ui.components.stripThinkingTagsForHistory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -102,6 +103,8 @@ data class LeafyUiState(
     val useComicSans: Boolean = false,
     val isDarkTheme: Boolean = false,
     val useGradientText: Boolean = true,
+    val showChatStatusBar: Boolean = true,
+    val enableThinking: Boolean = false,
     val statusBannerMessage: String? = null,
     val totalSessionTokens: Int = 0,
     val isImportingModel: Boolean = false,
@@ -141,6 +144,8 @@ class LeafyViewModel(
     private val _useComicSans = MutableStateFlow(prefs.getBoolean(KEY_USE_COMIC_SANS, false))
     private val _isDarkTheme = MutableStateFlow(prefs.getBoolean(KEY_IS_DARK_THEME, false))
     private val _useGradientText = MutableStateFlow(prefs.getBoolean(KEY_USE_GRADIENT_TEXT, true))
+    private val _showChatStatusBar = MutableStateFlow(prefs.getBoolean(KEY_SHOW_CHAT_STATUS_BAR, true))
+    private val _enableThinking = MutableStateFlow(prefs.getBoolean(KEY_ENABLE_THINKING, false))
     private val _statusBannerMessage = MutableStateFlow<String?>(null)
     private val _totalSessionTokens = MutableStateFlow(0)
     private val _isImportingModel = MutableStateFlow(false)
@@ -217,14 +222,22 @@ class LeafyViewModel(
         quintuple(streaming, telemetry, speakingId, banner, totalTokens)
     }
 
+    private val uiFlagsFlow = combine(
+        _useGradientText,
+        _showChatStatusBar,
+        _enableThinking
+    ) { useGradientText, showChatStatusBar, enableThinking ->
+        Triple(useGradientText, showChatStatusBar, enableThinking)
+    }
+
     private val importFlow = combine(
         _isImportingModel,
         _importProgress,
         _importStatusText,
         _sessionTpsSnapshot,
-        _useGradientText
-    ) { isImporting, progress, statusText, sessionTps, useGradientText ->
-        quintuple(isImporting, progress, statusText, sessionTps, useGradientText)
+        uiFlagsFlow
+    ) { isImporting, progress, statusText, sessionTps, uiFlags ->
+        quintuple(isImporting, progress, statusText, sessionTps, uiFlags)
     }
 
     val uiState: StateFlow<LeafyUiState> = combine(
@@ -312,7 +325,9 @@ class LeafyViewModel(
             speakingMessageId = speakingId,
             useComicSans = useComicSans,
             isDarkTheme = isDarkTheme,
-            useGradientText = importState.fifth,
+            useGradientText = importState.fifth.first,
+            showChatStatusBar = importState.fifth.second,
+            enableThinking = importState.fifth.third,
             statusBannerMessage = banner,
             totalSessionTokens = computedTpsTelemetry.totalSessionTokens,
             isImportingModel = importState.first,
@@ -580,6 +595,29 @@ class LeafyViewModel(
     fun setGradientText(enabled: Boolean) {
         _useGradientText.value = enabled
         prefs.edit().putBoolean(KEY_USE_GRADIENT_TEXT, enabled).apply()
+    }
+
+    fun setShowChatStatusBar(enabled: Boolean) {
+        _showChatStatusBar.value = enabled
+        prefs.edit().putBoolean(KEY_SHOW_CHAT_STATUS_BAR, enabled).apply()
+        showTransientBanner(
+            if (enabled) "Top chat status bar enabled."
+            else "Top chat status bar hidden."
+        )
+    }
+
+    fun toggleShowChatStatusBar() {
+        setShowChatStatusBar(!_showChatStatusBar.value)
+    }
+
+    fun setThinkingEnabled(enabled: Boolean) {
+        _enableThinking.value = enabled
+        prefs.edit().putBoolean(KEY_ENABLE_THINKING, enabled).apply()
+    }
+
+    fun toggleThinking() {
+        val next = !_enableThinking.value
+        setThinkingEnabled(next)
     }
 
     fun setPowerProfile(profile: PowerProfile) {
@@ -1123,7 +1161,8 @@ class LeafyViewModel(
                     pinnedDocs = pinnedDocs,
                     conversationHistory = priorHistory,
                     branchAttemptIndex = branchAttemptIndex,
-                    hardwareMeasuredMilliwatts = initialHwMw
+                    hardwareMeasuredMilliwatts = initialHwMw,
+                    enableThinking = uiState.value.enableThinking
                 ).collect { step ->
                     finalStepText = step.accumulatedText
                     finalTps = step.currentTps
@@ -1684,7 +1723,8 @@ class LeafyViewModel(
     }
 
     fun toggleSpeakMessage(messageId: Long, content: String) {
-        voiceHelper.toggleSpeak(messageId, content)
+        val cleanSpokenContent = stripThinkingTagsForHistory(content).ifBlank { content }
+        voiceHelper.toggleSpeak(messageId, cleanSpokenContent)
     }
 
     fun wipeAllOfflineData() {
@@ -1740,6 +1780,8 @@ class LeafyViewModel(
         private const val KEY_USE_COMIC_SANS = "use_comic_sans"
         private const val KEY_IS_DARK_THEME = "is_dark_theme"
         private const val KEY_USE_GRADIENT_TEXT = "use_gradient_text"
+        private const val KEY_SHOW_CHAT_STATUS_BAR = "show_chat_status_bar"
+        private const val KEY_ENABLE_THINKING = "enable_thinking"
         private const val MAX_PROMPT_CHARS = 16_000
         private const val MAX_ASSISTANT_REPLY_CHARS = 32_000
         private const val MAX_RAG_CONTENT_CHARS = 24_000

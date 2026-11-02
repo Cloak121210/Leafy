@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.leafy.vkmqxz"
     minSdk = 24
     targetSdk = 36
-    versionCode = 18
-    versionName = "0.9.7"
+    versionCode = 20
+    versionName = "0.9.8.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -151,8 +151,8 @@ dependencies {
 }
 
 val builtDebugApkProvider = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk")
-val rootTargetApkFile = rootProject.layout.projectDirectory.file("Leafy-v0.9.7.apk").asFile
-val rootTargetApkAltFile = rootProject.layout.projectDirectory.file("Leafy-0.9.7.apk").asFile
+val rootTargetApkFile = rootProject.layout.projectDirectory.file("Leafy-v0.9.8.5.apk").asFile
+val rootTargetApkAltFile = rootProject.layout.projectDirectory.file("Leafy-0.9.8.5.apk").asFile
 
 tasks.matching { it.name == "packageDebug" }.configureEach {
   val builtApkProvider = builtDebugApkProvider

@@ -51,7 +51,6 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -80,6 +79,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -87,6 +87,7 @@ import androidx.core.content.ContextCompat
 import com.example.data.AiRuntime
 import com.example.data.MessageNodeEntity
 import com.example.engine.InferenceTelemetryPhase
+import com.example.ui.components.CollapsibleThinkingSection
 import com.example.ui.components.MarkdownText
 import com.example.ui.components.importantTextColor
 import com.example.ui.components.importantTextStyle
@@ -99,6 +100,7 @@ import com.example.ui.components.livingPrimaryBubbleContentColor
 import com.example.ui.components.livingSecondaryButtonBrush
 import com.example.ui.components.livingSecondaryHeroBrush
 import com.example.ui.components.livingSurfaceCardBrush
+import com.example.ui.components.parseThinkingAndResponse
 import com.example.ui.components.runtimeAccentColor
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.viewmodel.BranchedMessageItem
@@ -130,9 +132,9 @@ fun ChatStudioScreen(
     onSwitchSiblingBranch: (Long) -> Unit,
     onToggleSpeak: (Long, String) -> Unit,
     onStopStreaming: () -> Unit,
-    onOpenSpecialMenu: () -> Unit,
     onNavigateToModels: () -> Unit,
     onOpenRuntimeSwitcher: () -> Unit = {},
+    onToggleThinking: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -254,52 +256,53 @@ fun ChatStudioScreen(
                 .fillMaxSize()
                 .widthIn(max = 720.dp)
         ) {
-            // Compact status pill showing active runtime, live TPS readout, persona, pinned RAG count & battery telemetry
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 1.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
+            // Compact status pill showing active runtime, live TPS readout, persona, pinned RAG count & battery telemetry (optional via Settings)
+            if (uiState.showChatStatusBar) {
+                Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable(onClick = onOpenSpecialMenu)
-                        .testTag("chat_context_whisper_pill"),
-                    shape = RoundedCornerShape(20.dp),
-                    color = Color.Transparent,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 1.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Row(
+                    Surface(
                         modifier = Modifier
-                            .background(brush = livingSecondaryButtonBrush())
-                            .padding(horizontal = 10.dp, vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            .clip(RoundedCornerShape(20.dp))
+                            .testTag("chat_context_whisper_pill"),
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.Transparent,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.EnergySavingsLeaf,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        val tpsSuffix = when {
-                            uiState.streamingPreview != null && uiState.streamingPreview.phase == InferenceTelemetryPhase.PREFILLING ->
-                                " • PREFILL (${if (uiState.streamingPreview.ttftMs > 0) "${uiState.streamingPreview.ttftMs}ms" else "not measured"})"
-                            uiState.streamingPreview != null && uiState.streamingPreview.instantTps > 0f ->
-                                " • ${"%.1f".format(uiState.streamingPreview.instantTps)} t/s"
-                            uiState.tpsTelemetry.decodeTps > 0f ->
-                                " • ${"%.1f".format(uiState.tpsTelemetry.decodeTps)} t/s"
-                            else -> " • TPS: not measured"
+                        Row(
+                            modifier = Modifier
+                                .background(brush = livingSecondaryButtonBrush())
+                                .padding(horizontal = 10.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.EnergySavingsLeaf,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            val tpsSuffix = when {
+                                uiState.streamingPreview != null && uiState.streamingPreview.phase == InferenceTelemetryPhase.PREFILLING ->
+                                    " • PREFILL (${if (uiState.streamingPreview.ttftMs > 0) "${uiState.streamingPreview.ttftMs}ms" else "not measured"})"
+                                uiState.streamingPreview != null && uiState.streamingPreview.instantTps > 0f ->
+                                    " • ${"%.1f".format(uiState.streamingPreview.instantTps)} t/s"
+                                uiState.tpsTelemetry.decodeTps > 0f ->
+                                    " • ${"%.1f".format(uiState.tpsTelemetry.decodeTps)} t/s"
+                                else -> " • TPS: not measured"
+                            }
+                            val battLabel = if (uiState.telemetry.batteryPercent in 0..100) "${uiState.telemetry.batteryPercent}%" else "not measured"
+                            Text(
+                                text = "${uiState.activeRuntime.displayName}$tpsSuffix • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG • $battLabel",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-                        val battLabel = if (uiState.telemetry.batteryPercent in 0..100) "${uiState.telemetry.batteryPercent}%" else "not measured"
-                        Text(
-                            text = "${uiState.activeRuntime.displayName}$tpsSuffix • ${uiState.activePersona?.name ?: "Leafy Assistant"} • ${uiState.powerProfile.displayName} • ${uiState.pinnedRagDocuments.size} RAG • $battLabel",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                     }
                 }
             }
@@ -531,32 +534,10 @@ fun ChatStudioScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(brush = livingSurfaceCardBrush())
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                            .padding(start = 10.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
-                        IconButton(
-                            onClick = onOpenSpecialMenu,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("composer_special_menu_button")
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(brush = livingSecondaryButtonBrush()),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Tune,
-                                    contentDescription = "Open power mode & persona controls",
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(17.dp)
-                                )
-                            }
-                        }
-
                         OutlinedTextField(
                             value = promptInput,
                             onValueChange = { promptInput = it },
@@ -580,6 +561,51 @@ fun ChatStudioScreen(
                                 unfocusedBorderColor = Color.Transparent
                             )
                         )
+
+                        // Simple "Think" toggle button that changes color when toggled ON
+                        Surface(
+                            modifier = Modifier
+                                .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable(onClick = onToggleThinking)
+                                .testTag("composer_think_toggle_button"),
+                            shape = RoundedCornerShape(18.dp),
+                            color = Color.Transparent,
+                            border = BorderStroke(
+                                width = if (uiState.enableThinking) 1.3.dp else 1.dp,
+                                color = if (uiState.enableThinking) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
+                                } else {
+                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                                }
+                            )
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        brush = if (uiState.enableThinking) {
+                                            livingBrightButtonBrush()
+                                        } else {
+                                            livingSecondaryButtonBrush()
+                                        }
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Think",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = if (uiState.enableThinking) FontWeight.SemiBold else FontWeight.Medium
+                                    ),
+                                    color = if (uiState.enableThinking) {
+                                        livingBrightButtonContentColor()
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 1
+                                )
+                            }
+                        }
 
                         IconButton(
                             onClick = {
@@ -842,10 +868,32 @@ private fun BranchedMessageBubble(
                         .padding(horizontal = 13.dp, vertical = 9.dp),
                     verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    MarkdownText(
-                        markdown = node.content,
-                        isUser = isUser
-                    )
+                    if (isUser) {
+                        MarkdownText(
+                            markdown = node.content,
+                            isUser = true
+                        )
+                    } else {
+                        val parsed = remember(node.content) { parseThinkingAndResponse(node.content) }
+                        if (parsed.thinkingText != null) {
+                            CollapsibleThinkingSection(
+                                thinkingText = parsed.thinkingText,
+                                isThinkingInProgress = false
+                            )
+                        }
+                        if (parsed.responseText.isNotBlank()) {
+                            MarkdownText(
+                                markdown = parsed.responseText,
+                                isUser = false
+                            )
+                        } else if (parsed.thinkingText != null) {
+                            Text(
+                                text = "Generation ended during thinking phase — tap Regeneration or increase context window.",
+                                style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
 
                     AnimatedVisibility(visible = !isUser && showTelemetryAndRagDetails) {
                         val decodeLabel = if (node.tokensPerSec > 0f) "${"%.1f".format(node.tokensPerSec)} t/s" else "not measured"
@@ -1087,6 +1135,7 @@ private fun StreamingAssistantCard(
 ) {
     val accent = runtimeAccentColor(preview.runtime)
     val isPrefilling = preview.phase == InferenceTelemetryPhase.PREFILLING
+    val parsed = remember(preview.partialText) { parseThinkingAndResponse(preview.partialText) }
 
     Card(
         modifier = Modifier
@@ -1104,70 +1153,37 @@ private fun StreamingAssistantCard(
                 .padding(horizontal = 13.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
-            // Top Header: Runtime, Phase Pill, Live Instant/Decode TPS & Stop Button
+            if (parsed.thinkingText != null) {
+                CollapsibleThinkingSection(
+                    thinkingText = parsed.thinkingText,
+                    isThinkingInProgress = parsed.isThinkingInProgress
+                )
+            }
+
+            if (preview.partialText.isBlank() && isPrefilling) {
+                Text(
+                    text = "Preparing response…",
+                    style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else if (parsed.responseText.isNotBlank()) {
+                MarkdownText(
+                    markdown = parsed.responseText,
+                    isUser = false
+                )
+            } else if (parsed.isThinkingInProgress) {
+                Text(
+                    text = "Reasoning in progress…",
+                    style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = accent.copy(alpha = 0.14f)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isPrefilling) Icons.Default.Bolt else Icons.Default.Speed,
-                                contentDescription = null,
-                                tint = accent,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Text(
-                                text = if (isPrefilling) "PREFILL" else "LIVE TPS",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = JetBrainsMonoFontFamily,
-                                    fontWeight = FontWeight.Medium
-                                ),
-                                color = accent
-                            )
-                        }
-                    }
-
-                    val backendTitle = preview.runtimeBackendLabel.ifBlank { preview.runtime.displayName }
-                    val promptTokText = if (preview.promptTokensCount > 0) "${preview.promptTokensCount} prompt tok" else "prompt tok: not measured"
-                    val decodeHeaderText = if (preview.instantTps > 0f || preview.liveTps > 0f) {
-                        val inst = if (preview.instantTps > 0f) "${"%.1f".format(preview.instantTps)} t/s" else "not measured"
-                        val avg = if (preview.liveTps > 0f) "${"%.1f".format(preview.liveTps)} t/s" else "not measured"
-                        "$backendTitle • $inst (Decode: $avg)"
-                    } else {
-                        "$backendTitle • Decode: not measured"
-                    }
-                    Text(
-                        text = if (isPrefilling) {
-                            "$backendTitle • $promptTokText"
-                        } else {
-                            decodeHeaderText
-                        },
-                        style = importantTextStyle(
-                            MaterialTheme.typography.labelMedium.copy(
-                                fontFamily = JetBrainsMonoFontFamily,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        ),
-                        color = importantTextColor(accent),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
                 TextButton(
                     onClick = onStop,
                     modifier = Modifier.testTag("stop_streaming_button")
@@ -1180,63 +1196,6 @@ private fun StreamingAssistantCard(
                     Spacer(modifier = Modifier.width(3.dp))
                     Text("Stop")
                 }
-            }
-
-            // Live Telemetry HUD Strip
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(11.dp),
-                color = Color.Transparent,
-                border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(brush = livingMetricBoxBrush())
-                        .padding(horizontal = 9.dp, vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "TTFT: ${if (preview.ttftMs > 0) "${preview.ttftMs} ms" else "not measured"}",
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "ITL: ${if (preview.interTokenLatencyMs > 0f) "${"%.1f".format(preview.interTokenLatencyMs)} ms/tok" else "not measured"}",
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "Out: ${preview.generatedTokens} tok",
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = if (preview.energyMicroWh > 0f) "${"%.1f".format(preview.energyMicroWh)} µWh" else "Energy: not measured",
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-            }
-
-            if (preview.partialText.isBlank() && isPrefilling) {
-                val promptCountLabel = if (preview.promptTokensCount > 0) "${preview.promptTokensCount} native tokens" else "not measured"
-                Text(
-                    text = "Evaluating prompt context ($promptCountLabel) into ${preview.runtimeBackendLabel.ifBlank { preview.runtime.displayName }} (${preview.quantization}) KV cache…",
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                MarkdownText(
-                    markdown = preview.partialText,
-                    isUser = false
-                )
             }
         }
     }

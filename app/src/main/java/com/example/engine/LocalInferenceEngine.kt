@@ -10,6 +10,7 @@ import com.example.data.MessageNodeEntity
 import com.example.data.PersonaPresetEntity
 import com.example.data.PowerProfile
 import com.example.data.RagDocumentEntity
+import com.example.ui.components.stripThinkingTagsForHistory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -482,7 +483,8 @@ class LocalInferenceEngine(
         pinnedDocs: List<RagDocumentEntity>,
         @Suppress("UNUSED_PARAMETER") branchAttemptIndex: Int = 1,
         conversationHistory: List<MessageNodeEntity> = emptyList(),
-        hardwareMeasuredMilliwatts: Float = -1f
+        hardwareMeasuredMilliwatts: Float = -1f,
+        enableThinking: Boolean = false
     ): Flow<StreamingStep> = flow {
         isCancelled = false
 
@@ -518,7 +520,14 @@ class LocalInferenceEngine(
         }
 
         val retrievedRag = retrieveRagContext(userPrompt, pinnedDocs)
-        val formattedPrompt = buildFormattedPrompt(userPrompt, persona, retrievedRag, conversationHistory)
+        val formattedPrompt = buildFormattedPrompt(
+            userPrompt = userPrompt,
+            persona = persona,
+            ragSnippets = retrievedRag,
+            conversationHistory = conversationHistory,
+            enableThinking = enableThinking,
+            modelNameHint = model.name
+        )
 
         when (runtime) {
             AiRuntime.LLAMA_CPP -> {
@@ -532,7 +541,8 @@ class LocalInferenceEngine(
                         persona = persona,
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
-                        hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts
+                        hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
+                        enableThinking = enableThinking
                     )
                 )
             }
@@ -547,7 +557,8 @@ class LocalInferenceEngine(
                         persona = persona,
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
-                        hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts
+                        hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
+                        enableThinking = enableThinking
                     )
                 )
             }
@@ -561,7 +572,8 @@ class LocalInferenceEngine(
                         persona = persona,
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
-                        hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts
+                        hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
+                        enableThinking = enableThinking
                     )
                 )
             }
@@ -576,7 +588,8 @@ class LocalInferenceEngine(
                         persona = persona,
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
-                        hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts
+                        hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
+                        enableThinking = enableThinking
                     )
                 )
             }
@@ -841,13 +854,13 @@ class LocalInferenceEngine(
 
     private fun computeGenerationTokenBudget(effectiveCtxSize: Int): Int {
         val safeCtx = effectiveCtxSize.coerceIn(512, 4096)
-        return (safeCtx / 6).coerceIn(64, 384)
+        return (safeCtx / 2).coerceIn(256, 768)
     }
 
     private fun computeMaxPromptChars(effectiveCtxSize: Int, nPredict: Int): Int {
         val safeCtx = effectiveCtxSize.coerceIn(512, 4096)
-        val availablePromptTokens = ((safeCtx / 2) - nPredict - 24).coerceIn(64, 1024)
-        return (availablePromptTokens * 3).coerceIn(256, 3072)
+        val availablePromptTokens = (safeCtx - nPredict - 32).coerceIn(128, 1536)
+        return (availablePromptTokens * 3).coerceIn(384, 4096)
     }
 
     private fun filterRecentHistory(
@@ -857,6 +870,13 @@ class LocalInferenceEngine(
     ): List<MessageNodeEntity> {
         if (history.isEmpty() || maxTurns <= 0) return emptyList()
         return history
+            .map { node ->
+                if (node.role.equals("ASSISTANT", ignoreCase = true)) {
+                    node.copy(content = stripThinkingTagsForHistory(node.content))
+                } else {
+                    node
+                }
+            }
             .filter { node ->
                 node.content.isNotBlank() &&
                     !node.content.startsWith("Error:") &&
@@ -880,7 +900,11 @@ class LocalInferenceEngine(
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
         fallbackFormattedPrompt: String,
-        effectiveCtxSize: Int = 2048
+        effectiveCtxSize: Int = 2048,
+        enableThinking: Boolean = false,
+        chatTemplateHint: String? = null,
+        modelArchHint: String? = null,
+        modelNameHint: String = ""
     ): String {
         val nPredict = computeGenerationTokenBudget(effectiveCtxSize)
         val maxPromptChars = computeMaxPromptChars(effectiveCtxSize, nPredict)
@@ -896,7 +920,11 @@ class LocalInferenceEngine(
                 persona = persona,
                 ragSnippets = retrievedRag,
                 conversationHistory = boundedHistory,
-                effectiveCtxSize = effectiveCtxSize
+                effectiveCtxSize = effectiveCtxSize,
+                chatTemplateHint = chatTemplateHint,
+                enableThinking = enableThinking,
+                modelArchHint = modelArchHint,
+                modelNameHint = modelNameHint
             )
 
             if (candidate.length <= maxPromptChars || turnsToKeep == 0) {
@@ -924,7 +952,8 @@ class LocalInferenceEngine(
         persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
-        hardwareMeasuredMilliwatts: Float
+        hardwareMeasuredMilliwatts: Float,
+        enableThinking: Boolean = false
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
@@ -970,7 +999,8 @@ class LocalInferenceEngine(
                     persona = persona,
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
-                    hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts
+                    hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
+                    enableThinking = enableThinking
                 )
             )
         } else {
@@ -986,7 +1016,8 @@ class LocalInferenceEngine(
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
                     hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
-                    backendLabel = "librnllama JNI (llama.cpp)"
+                    backendLabel = "librnllama JNI (llama.cpp)",
+                    enableThinking = enableThinking
                 )
             )
         }
@@ -1005,7 +1036,8 @@ class LocalInferenceEngine(
         persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
-        hardwareMeasuredMilliwatts: Float
+        hardwareMeasuredMilliwatts: Float,
+        enableThinking: Boolean = false
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
@@ -1051,7 +1083,8 @@ class LocalInferenceEngine(
                     persona = persona,
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
-                    hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts
+                    hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
+                    enableThinking = enableThinking
                 )
             )
         } else {
@@ -1086,7 +1119,8 @@ class LocalInferenceEngine(
         persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
-        hardwareMeasuredMilliwatts: Float
+        hardwareMeasuredMilliwatts: Float,
+        enableThinking: Boolean = false
     ): Flow<StreamingStep> = flow {
         inferenceMutex.withLock {
             var handle = 0L
@@ -1185,7 +1219,10 @@ class LocalInferenceEngine(
                     conversationHistory = conversationHistory,
                     fallbackFormattedPrompt = formattedPrompt,
                     effectiveCtxSize = effectiveCtx,
-                    ggufChatTemplate = headerInfo.chatTemplate
+                    ggufChatTemplate = headerInfo.chatTemplate,
+                    enableThinking = enableThinking,
+                    modelArchHint = headerInfo.architecture,
+                    modelNameHint = headerInfo.modelName ?: model.name
                 )
 
                 val exactPromptTokens = LeafyNativeBridge.nativeTokenizeCount(handle, effectivePrompt).coerceAtLeast(0)
@@ -1318,7 +1355,10 @@ class LocalInferenceEngine(
         conversationHistory: List<MessageNodeEntity>,
         fallbackFormattedPrompt: String,
         effectiveCtxSize: Int,
-        ggufChatTemplate: String? = null
+        ggufChatTemplate: String? = null,
+        enableThinking: Boolean = false,
+        modelArchHint: String? = null,
+        modelNameHint: String = ""
     ): String {
         val nPredict = computeGenerationTokenBudget(effectiveCtxSize)
         val maxPromptChars = computeMaxPromptChars(effectiveCtxSize, nPredict)
@@ -1358,7 +1398,14 @@ class LocalInferenceEngine(
             ""
         }
         if (templated.isNotBlank()) {
-            return if (templated.length > maxPromptChars) templated.takeLast(maxPromptChars) else templated
+            val adjusted = applyThinkingDirectiveToPrompt(
+                prompt = templated,
+                enableThinking = enableThinking,
+                chatTemplateHint = ggufChatTemplate,
+                modelArchHint = modelArchHint,
+                modelNameHint = modelNameHint
+            )
+            return if (adjusted.length > maxPromptChars) adjusted.takeLast(maxPromptChars) else adjusted
         }
         val ggufFormatted = buildFormattedPrompt(
             userPrompt = userPrompt.trim().take((maxPromptChars / 2).coerceAtLeast(200)),
@@ -1366,7 +1413,10 @@ class LocalInferenceEngine(
             ragSnippets = retrievedRag,
             conversationHistory = boundedHistory,
             effectiveCtxSize = effectiveCtxSize,
-            chatTemplateHint = ggufChatTemplate
+            chatTemplateHint = ggufChatTemplate,
+            enableThinking = enableThinking,
+            modelArchHint = modelArchHint,
+            modelNameHint = modelNameHint
         )
         return if (ggufFormatted.isNotBlank()) {
             ggufFormatted.takeLast(maxPromptChars)
@@ -1391,7 +1441,8 @@ class LocalInferenceEngine(
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
         hardwareMeasuredMilliwatts: Float,
-        backendLabel: String
+        backendLabel: String,
+        enableThinking: Boolean = false
     ): Flow<StreamingStep> = flow {
         inferenceMutex.withLock {
             var llamaCtx: LlamaContext? = null
@@ -1419,7 +1470,11 @@ class LocalInferenceEngine(
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
                     fallbackFormattedPrompt = formattedPrompt,
-                    effectiveCtxSize = effectiveCtx
+                    effectiveCtxSize = effectiveCtx,
+                    enableThinking = enableThinking,
+                    chatTemplateHint = headerInfo.chatTemplate,
+                    modelArchHint = headerInfo.architecture,
+                    modelNameHint = headerInfo.modelName ?: model.name
                 )
 
                 // Tokenize prompt using the loaded native model's vocabulary (never estimate from character length)
@@ -1629,7 +1684,8 @@ class LocalInferenceEngine(
         persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
-        hardwareMeasuredMilliwatts: Float
+        hardwareMeasuredMilliwatts: Float,
+        enableThinking: Boolean = false
     ): Flow<StreamingStep> = flow {
         val pteHeader = readPteHeader(modelFile)
         val ggufHeader = readGgufHeader(modelFile)
@@ -1679,7 +1735,9 @@ class LocalInferenceEngine(
                         persona = persona,
                         ragSnippets = retrievedRag,
                         conversationHistory = conversationHistory,
-                        effectiveCtxSize = targetCtx
+                        effectiveCtxSize = targetCtx,
+                        enableThinking = enableThinking,
+                        modelNameHint = model.name
                     )
                     val tpsTracker = LiveTpsTelemetryTracker(
                         promptTokensCount = 0,
@@ -1932,7 +1990,8 @@ class LocalInferenceEngine(
         persona: PersonaPresetEntity,
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
-        hardwareMeasuredMilliwatts: Float
+        hardwareMeasuredMilliwatts: Float,
+        enableThinking: Boolean = false
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
@@ -1969,7 +2028,8 @@ class LocalInferenceEngine(
                     persona = persona,
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
-                    hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts
+                    hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
+                    enableThinking = enableThinking
                 )
             )
         } else {
@@ -1987,6 +2047,62 @@ class LocalInferenceEngine(
         }
     }
 
+    private fun isModelThinkingCapable(
+        chatTemplateHint: String?,
+        modelArchHint: String?,
+        modelNameHint: String,
+        promptText: String
+    ): Boolean {
+        if (chatTemplateHint?.contains("<think>", ignoreCase = true) == true) return true
+        if (promptText.endsWith("<think>\n") || promptText.endsWith("<think>")) return true
+        val combinedMeta = "${modelArchHint.orEmpty()} $modelNameHint".lowercase()
+        return combinedMeta.contains("lfm3") ||
+            combinedMeta.contains("lfm2") ||
+            combinedMeta.contains("qwen3") ||
+            combinedMeta.contains("deepseek") ||
+            combinedMeta.contains("smollm3") ||
+            combinedMeta.contains("think") ||
+            combinedMeta.contains("-r1")
+    }
+
+    private fun applyThinkingDirectiveToPrompt(
+        prompt: String,
+        enableThinking: Boolean,
+        chatTemplateHint: String?,
+        modelArchHint: String?,
+        modelNameHint: String
+    ): String {
+        val thinkingCapable = isModelThinkingCapable(
+            chatTemplateHint = chatTemplateHint,
+            modelArchHint = modelArchHint,
+            modelNameHint = modelNameHint,
+            promptText = prompt
+        )
+        if (!thinkingCapable) return prompt
+
+        return if (!enableThinking) {
+            when {
+                prompt.endsWith("<think>\n") ->
+                    prompt.removeSuffix("<think>\n") + "<think>\n\n</think>\n\n"
+                prompt.endsWith("<think>") ->
+                    prompt.removeSuffix("<think>") + "<think>\n\n</think>\n\n"
+                prompt.endsWith("</think>\n\n") || prompt.endsWith("</think>\n") ->
+                    prompt
+                else ->
+                    prompt + "<think>\n\n</think>\n\n"
+            }
+        } else {
+            // When thinking is enabled, strip any pre-attached `<think>` from the prompt so that:
+            // 1. Models trained to think emit `<think>` as their first generated token (captured in accumulatedText)
+            // 2. Models NOT trained to think perform direct inference without being forced into `<think>`
+            when {
+                prompt.endsWith("<think>\n") -> prompt.removeSuffix("<think>\n")
+                prompt.endsWith("<think>") -> prompt.removeSuffix("<think>")
+                else -> prompt
+            }
+        }
+    }
+
     /**
      * Formats user prompt with Persona system instructions, recent conversation history, and retrieved RAG context.
      */
@@ -1996,7 +2112,10 @@ class LocalInferenceEngine(
         ragSnippets: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity> = emptyList(),
         effectiveCtxSize: Int = 2048,
-        chatTemplateHint: String? = null
+        chatTemplateHint: String? = null,
+        enableThinking: Boolean = false,
+        modelArchHint: String? = null,
+        modelNameHint: String = ""
     ): String {
         val maxTurns = if (effectiveCtxSize <= 512) 2 else if (effectiveCtxSize <= 1024) 4 else 6
         val maxTurnChars = if (effectiveCtxSize <= 512) 220 else 500
@@ -2012,7 +2131,7 @@ class LocalInferenceEngine(
         val recentHistory = filterRecentHistory(conversationHistory, maxTurns, maxTurnChars)
         val tmpl = chatTemplateHint.orEmpty()
 
-        return when {
+        val basePrompt = when {
             tmpl.contains("<|start_header_id|>") -> buildString {
                 append("<|begin_of_text|>")
                 if (systemInstruction.isNotBlank()) {
@@ -2071,6 +2190,14 @@ class LocalInferenceEngine(
                 append("<|im_end|>\n<|im_start|>assistant\n")
             }
         }
+
+        return applyThinkingDirectiveToPrompt(
+            prompt = basePrompt,
+            enableThinking = enableThinking,
+            chatTemplateHint = chatTemplateHint,
+            modelArchHint = modelArchHint,
+            modelNameHint = modelNameHint
+        )
     }
 
     /**

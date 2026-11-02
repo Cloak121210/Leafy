@@ -27,6 +27,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -36,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,7 +55,188 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.testTag
 import com.example.ui.theme.JetBrainsMonoFontFamily
+
+data class ParsedModelOutput(
+    val thinkingText: String?,
+    val responseText: String,
+    val isThinkingInProgress: Boolean
+)
+
+private val CLOSED_THINK_REGEX = Regex(
+    pattern = "<(?:think|\\|thought\\|)>(.*?)</(?:think|\\|thought\\|)>",
+    options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+)
+
+private val OPEN_THINK_REGEX = Regex(
+    pattern = "<(?:think|\\|thought\\|)>",
+    options = setOf(RegexOption.IGNORE_CASE)
+)
+
+private val CLOSE_THINK_REGEX = Regex(
+    pattern = "</(?:think|\\|thought\\|)>",
+    options = setOf(RegexOption.IGNORE_CASE)
+)
+
+/**
+ * Separates `<think>...</think>` (or `<|thought|>...</|thought|>`) internal reasoning from the
+ * assistant's user-facing reply, supporting both live streaming (unclosed `<think>`) and completed messages.
+ */
+fun parseThinkingAndResponse(rawText: String): ParsedModelOutput {
+    if (rawText.isBlank()) {
+        return ParsedModelOutput(thinkingText = null, responseText = "", isThinkingInProgress = false)
+    }
+
+    val trimmedStart = rawText.trimStart()
+    val lowerStart = trimmedStart.lowercase()
+    if (lowerStart.startsWith("<") &&
+        ("<think>".startsWith(lowerStart) || "<|thought|>".startsWith(lowerStart)) &&
+        !lowerStart.contains(">")
+    ) {
+        return ParsedModelOutput(
+            thinkingText = "",
+            responseText = "",
+            isThinkingInProgress = true
+        )
+    }
+
+    val extractedThoughts = mutableListOf<String>()
+    var working = rawText
+
+    // Handle case where prompt prefilled `<think>` and output stream starts directly with thought text followed by `</think>`
+    val firstOpen = OPEN_THINK_REGEX.find(working)
+    val firstClose = CLOSE_THINK_REGEX.find(working)
+    if (firstClose != null && (firstOpen == null || firstClose.range.first < firstOpen.range.first)) {
+        val leadingThought = working.substring(0, firstClose.range.first).trim()
+        if (leadingThought.isNotEmpty()) {
+            extractedThoughts.add(leadingThought)
+        }
+        working = working.substring(firstClose.range.last + 1)
+    }
+
+    // Extract all closed `<think>...</think>` blocks
+    working = CLOSED_THINK_REGEX.replace(working) { matchResult ->
+        val inner = matchResult.groupValues.getOrNull(1)?.trim().orEmpty()
+        if (inner.isNotEmpty()) {
+            extractedThoughts.add(inner)
+        }
+        ""
+    }
+
+    // Check for any trailing unclosed `<think>` tag (e.g. while streaming or if stopped mid-thought)
+    val unclosedMatch = OPEN_THINK_REGEX.find(working)
+    var isThinkingInProgress = false
+    if (unclosedMatch != null) {
+        isThinkingInProgress = true
+        val trailingThought = working.substring(unclosedMatch.range.last + 1).trim()
+        if (trailingThought.isNotEmpty()) {
+            extractedThoughts.add(trailingThought)
+        }
+        working = working.substring(0, unclosedMatch.range.first)
+    }
+
+    // Strip any stray closing tags
+    val cleanResponse = CLOSE_THINK_REGEX.replace(working, "").trim()
+    val combinedThoughts = extractedThoughts.joinToString("\n\n").trim()
+
+    val finalThinking = when {
+        combinedThoughts.isNotEmpty() -> combinedThoughts
+        isThinkingInProgress -> ""
+        else -> null
+    }
+
+    return ParsedModelOutput(
+        thinkingText = finalThinking,
+        responseText = cleanResponse,
+        isThinkingInProgress = isThinkingInProgress
+    )
+}
+
+/**
+ * Strips `<think>...</think>` blocks from assistant messages before inserting into multi-turn prompt history
+ * or speaking via TTS.
+ */
+fun stripThinkingTagsForHistory(rawText: String): String {
+    val parsed = parseThinkingAndResponse(rawText)
+    return parsed.responseText
+}
+
+@Composable
+fun CollapsibleThinkingSection(
+    thinkingText: String,
+    isThinkingInProgress: Boolean,
+    modifier: Modifier = Modifier
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { expanded = !expanded }
+            .testTag("collapsible_thinking_section"),
+        shape = RoundedCornerShape(12.dp),
+        color = Color.Transparent,
+        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(brush = livingSecondaryButtonBrush())
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Psychology,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = if (isThinkingInProgress) "Thinking…" else "Thought Process",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Medium
+                        ),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Icon(
+                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse thoughts" else "Expand thoughts",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                if (thinkingText.isNotBlank()) {
+                    Text(
+                        text = thinkingText,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontStyle = FontStyle.Italic
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 2.dp)
+                            .testTag("thinking_content_text")
+                    )
+                }
+            }
+        }
+    }
+}
 
 sealed interface MarkdownBlock {
     data class Header(val level: Int, val text: String) : MarkdownBlock

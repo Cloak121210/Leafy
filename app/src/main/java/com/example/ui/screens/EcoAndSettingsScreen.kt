@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.EnergySavingsLeaf
 import androidx.compose.material.icons.filled.FontDownload
-import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Button
@@ -72,7 +71,7 @@ fun EcoAndSettingsScreen(
     onSelectPowerProfile: (PowerProfile) -> Unit,
     onSetComicSans: (Boolean) -> Unit,
     onSetGradientText: (Boolean) -> Unit = {},
-    onToggleDarkTheme: () -> Unit,
+    onSetShowChatStatusBar: (Boolean) -> Unit = {},
     onWipeOfflineData: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -654,7 +653,6 @@ fun EcoAndSettingsScreen(
                             )
                         }
 
-                        // Dark Moss Canopy Mode Toggle
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -666,19 +664,23 @@ fun EcoAndSettingsScreen(
                                 horizontalArrangement = Arrangement.spacedBy(7.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Palette,
+                                    imageVector = Icons.Default.EnergySavingsLeaf,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.secondary,
+                                    tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Column {
                                     Text(
-                                        text = "Dark Moss Canopy Mode",
+                                        text = "Show Top Status & Telemetry Bar",
                                         style = importantTextStyle(MaterialTheme.typography.titleSmall),
                                         color = importantTextColor(MaterialTheme.colorScheme.onSurface)
                                     )
                                     Text(
-                                        text = if (uiState.isDarkTheme) "OLED Dark Canopy active" else "Bright Sunlit Botanical active",
+                                        text = if (uiState.showChatStatusBar) {
+                                            "Compact status bar (runtime, TPS, persona, mode, RAG, battery) visible below top bar"
+                                        } else {
+                                            "Compact status bar hidden on the chat screen"
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -686,9 +688,9 @@ fun EcoAndSettingsScreen(
                             }
 
                             Switch(
-                                checked = uiState.isDarkTheme,
-                                onCheckedChange = { onToggleDarkTheme() },
-                                modifier = Modifier.testTag("dark_theme_switch")
+                                checked = uiState.showChatStatusBar,
+                                onCheckedChange = { onSetShowChatStatusBar(it) },
+                                modifier = Modifier.testTag("show_chat_status_bar_switch")
                             )
                         }
                     }

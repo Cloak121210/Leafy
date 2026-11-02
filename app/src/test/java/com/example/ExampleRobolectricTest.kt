@@ -22,8 +22,8 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
         assertEquals("Leafy", appName)
-        assertEquals("0.9.7", BuildConfig.VERSION_NAME)
-        assertEquals(18, BuildConfig.VERSION_CODE)
+        assertEquals("0.9.8.5", BuildConfig.VERSION_NAME)
+        assertEquals(20, BuildConfig.VERSION_CODE)
     }
 
     @Test
@@ -814,6 +814,40 @@ class ExampleRobolectricTest {
         assertTrue("titleLarge should have gradient brush when useGradientText=true", gradTypo.titleLarge.brush != null)
         assertTrue("titleMedium should have gradient brush when useGradientText=true", gradTypo.titleMedium.brush != null)
         assertEquals("bodyMedium should remain solid for readability", null, gradTypo.bodyMedium.brush)
+    }
+
+    @Test
+    fun `QF2_parseThinkingAndResponse_separates_streaming_and_completed_thinking_from_message`() {
+        // 1. Model not trained to think -> direct inference, no thinking section
+        val direct = com.example.ui.components.parseThinkingAndResponse("Hello! How can I help you today?")
+        assertEquals(null, direct.thinkingText)
+        assertEquals(false, direct.isThinkingInProgress)
+        assertEquals("Hello! How can I help you today?", direct.responseText)
+
+        // 2. Model currently streaming inside <think> (unclosed) -> separated from message
+        val streamingThink = com.example.ui.components.parseThinkingAndResponse(
+            "<think>We need to respond to the user's greeting \"Hello!\" appropriately."
+        )
+        assertEquals(
+            "We need to respond to the user's greeting \"Hello!\" appropriately.",
+            streamingThink.thinkingText
+        )
+        assertEquals(true, streamingThink.isThinkingInProgress)
+        assertEquals("", streamingThink.responseText)
+
+        // 3. Model finished <think>...</think> and produced reply -> separated cleanly
+        val completedThink = com.example.ui.components.parseThinkingAndResponse(
+            "<think>User greeted me. Keep it friendly.</think>\n\nHello there! How can I help you today?"
+        )
+        assertEquals("User greeted me. Keep it friendly.", completedThink.thinkingText)
+        assertEquals(false, completedThink.isThinkingInProgress)
+        assertEquals("Hello there! How can I help you today?", completedThink.responseText)
+
+        // 4. History stripper removes <think> blocks so prior reasoning does not pollute context
+        val stripped = com.example.ui.components.stripThinkingTagsForHistory(
+            "<think>Internal chain of thought</think>\nFinal visible answer."
+        )
+        assertEquals("Final visible answer.", stripped)
     }
 }
 
