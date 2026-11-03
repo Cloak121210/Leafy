@@ -117,7 +117,7 @@ interface LeafyDao {
         RagDocumentEntity::class,
         PersonaPresetEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class LeafyDatabase : RoomDatabase() {

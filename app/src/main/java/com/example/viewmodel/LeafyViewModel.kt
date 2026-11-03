@@ -105,6 +105,11 @@ data class LeafyUiState(
     val useGradientText: Boolean = true,
     val showChatStatusBar: Boolean = true,
     val enableThinking: Boolean = false,
+    val nPredictUnlimited: Boolean = true,
+    val customNPredict: Int = 512,
+    val contextSize: Int = 4096,
+    val includeThinkingInContext: Boolean = false,
+    val kvCacheType: String = "Q8_0",
     val statusBannerMessage: String? = null,
     val totalSessionTokens: Int = 0,
     val isImportingModel: Boolean = false,
@@ -146,6 +151,11 @@ class LeafyViewModel(
     private val _useGradientText = MutableStateFlow(prefs.getBoolean(KEY_USE_GRADIENT_TEXT, true))
     private val _showChatStatusBar = MutableStateFlow(prefs.getBoolean(KEY_SHOW_CHAT_STATUS_BAR, true))
     private val _enableThinking = MutableStateFlow(prefs.getBoolean(KEY_ENABLE_THINKING, false))
+    private val _nPredictUnlimited = MutableStateFlow(prefs.getBoolean(KEY_N_PREDICT_UNLIMITED, true))
+    private val _customNPredict = MutableStateFlow(prefs.getInt(KEY_CUSTOM_N_PREDICT, 512).coerceIn(16, 131072))
+    private val _contextSize = MutableStateFlow(prefs.getInt(KEY_CONTEXT_SIZE, 4096).coerceIn(2048, 131072))
+    private val _includeThinkingInContext = MutableStateFlow(prefs.getBoolean(KEY_INCLUDE_THINKING_IN_CONTEXT, false))
+    private val _kvCacheType = MutableStateFlow(prefs.getString(KEY_KV_CACHE_TYPE, "Q8_0") ?: "Q8_0")
     private val _statusBannerMessage = MutableStateFlow<String?>(null)
     private val _totalSessionTokens = MutableStateFlow(0)
     private val _isImportingModel = MutableStateFlow(false)
@@ -176,8 +186,7 @@ class LeafyViewModel(
                 if (!model.isInstalled || model.localFilePath.isBlank()) {
                     false
                 } else {
-                    val file = File(model.localFilePath)
-                    file.exists() && file.length() > 0L
+                    fileManager.isModelFileAvailable(File(model.localFilePath))
                 }
             }
         }
@@ -222,12 +231,23 @@ class LeafyViewModel(
         quintuple(streaming, telemetry, speakingId, banner, totalTokens)
     }
 
+    private val generationPrefsFlow = combine(
+        _nPredictUnlimited,
+        _customNPredict,
+        _contextSize,
+        _includeThinkingInContext,
+        _kvCacheType
+    ) { nPredictUnl, customNPred, ctxSize, inclThink, kvCache ->
+        quintuple(nPredictUnl, customNPred, ctxSize, inclThink, kvCache)
+    }
+
     private val uiFlagsFlow = combine(
         _useGradientText,
         _showChatStatusBar,
-        _enableThinking
-    ) { useGradientText, showChatStatusBar, enableThinking ->
-        Triple(useGradientText, showChatStatusBar, enableThinking)
+        _enableThinking,
+        generationPrefsFlow
+    ) { useGradientText, showChatStatusBar, enableThinking, genPrefs ->
+        Quadruple(useGradientText, showChatStatusBar, enableThinking, genPrefs)
     }
 
     private val importFlow = combine(
@@ -328,6 +348,11 @@ class LeafyViewModel(
             useGradientText = importState.fifth.first,
             showChatStatusBar = importState.fifth.second,
             enableThinking = importState.fifth.third,
+            nPredictUnlimited = importState.fifth.fourth.first,
+            customNPredict = importState.fifth.fourth.second,
+            contextSize = importState.fifth.fourth.third,
+            includeThinkingInContext = importState.fifth.fourth.fourth,
+            kvCacheType = importState.fifth.fourth.fifth,
             statusBannerMessage = banner,
             totalSessionTokens = computedTpsTelemetry.totalSessionTokens,
             isImportingModel = importState.first,
@@ -620,6 +645,52 @@ class LeafyViewModel(
         setThinkingEnabled(next)
     }
 
+    fun setNPredictUnlimited(unlimited: Boolean) {
+        _nPredictUnlimited.value = unlimited
+        prefs.edit().putBoolean(KEY_N_PREDICT_UNLIMITED, unlimited).apply()
+    }
+
+    fun setCustomNPredict(tokens: Int) {
+        val clamped = tokens.coerceIn(16, 131072)
+        _customNPredict.value = clamped
+        prefs.edit().putInt(KEY_CUSTOM_N_PREDICT, clamped).apply()
+    }
+
+    fun setContextSize(tokens: Int) {
+        val clamped = tokens.coerceIn(2048, 131072)
+        val changed = _contextSize.value != clamped
+        _contextSize.value = clamped
+        prefs.edit().putInt(KEY_CONTEXT_SIZE, clamped).apply()
+        if (changed && _streamingPreview.value == null) {
+            viewModelScope.launch {
+                inferenceEngine.offloadModelFromRam()
+                _mountedModelId.value = null
+            }
+        }
+    }
+
+    fun setIncludeThinkingInContext(enabled: Boolean) {
+        _includeThinkingInContext.value = enabled
+        prefs.edit().putBoolean(KEY_INCLUDE_THINKING_IN_CONTEXT, enabled).apply()
+    }
+
+    fun setKvCacheType(cacheType: String) {
+        val normalized = when (cacheType.uppercase()) {
+            "F16", "Q8_0", "Q8", "Q4_0", "Q4", "F32" -> if (cacheType.uppercase() == "Q8") "Q8_0" else if (cacheType.uppercase() == "Q4") "Q4_0" else cacheType.uppercase()
+            else -> "Q8_0"
+        }
+        val changed = _kvCacheType.value != normalized
+        _kvCacheType.value = normalized
+        prefs.edit().putString(KEY_KV_CACHE_TYPE, normalized).apply()
+        if (changed && _streamingPreview.value == null) {
+            viewModelScope.launch {
+                inferenceEngine.offloadModelFromRam()
+                _mountedModelId.value = null
+            }
+        }
+        showTransientBanner("KV Cache Type set to $normalized")
+    }
+
     fun setPowerProfile(profile: PowerProfile) {
         val changed = _powerProfile.value != profile
         _powerProfile.value = profile
@@ -633,7 +704,7 @@ class LeafyViewModel(
         } else {
             refreshTelemetry()
         }
-        showTransientBanner("${profile.displayName} activated (${profile.cpuThreads} threads • ${profile.contextLimit} ctx)")
+        showTransientBanner("${profile.displayName} activated (${profile.description})")
     }
 
     fun selectConversation(conversationId: Long) {
@@ -704,8 +775,8 @@ class LeafyViewModel(
         stopStreaming()
         viewModelScope.launch {
             val fileExists = withContext(Dispatchers.IO) {
-                val file = File(model.localFilePath)
-                model.isInstalled && model.localFilePath.isNotBlank() && file.exists() && file.length() > 0L
+                model.isInstalled && model.localFilePath.isNotBlank() &&
+                    fileManager.isModelFileAvailable(File(model.localFilePath))
             }
             if (!fileExists) {
                 repository.deleteLocalModel(model.id)
@@ -778,7 +849,9 @@ class LeafyViewModel(
                 val result = inferenceEngine.loadModelIntoRam(
                     model = model,
                     runtime = targetRuntime,
-                    powerProfile = uiState.value.powerProfile
+                    powerProfile = uiState.value.powerProfile,
+                    customContextSize = uiState.value.contextSize,
+                    kvCacheType = uiState.value.kvCacheType
                 )
                 result.fold(
                     onSuccess = { msg ->
@@ -824,8 +897,7 @@ class LeafyViewModel(
                     if (!it.isInstalled || it.localFilePath.isBlank()) {
                         false
                     } else {
-                        val f = File(it.localFilePath)
-                        f.exists() && f.length() > 0L
+                        fileManager.isModelFileAvailable(File(it.localFilePath))
                     }
                 }
             }
@@ -864,7 +936,7 @@ class LeafyViewModel(
                 ?: repository.conversations.first().firstOrNull()
                 ?: return@launch
             repository.updateConversation(currentConv.copy(activePersonaId = persona.id))
-            showTransientBanner("Persona active: ${persona.name}")
+            showTransientBanner("Preset active: ${persona.name}")
         }
     }
 
@@ -891,8 +963,7 @@ class LeafyViewModel(
                 return@launch
             }
             val modelFileValid = withContext(Dispatchers.IO) {
-                val modelFile = File(model.localFilePath)
-                modelFile.exists() && modelFile.length() > 0L
+                fileManager.isModelFileAvailable(File(model.localFilePath))
             }
             if (!modelFileValid) {
                 showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
@@ -915,12 +986,26 @@ class LeafyViewModel(
             val profile = state.powerProfile
             val persona = state.activePersona ?: PersonaPresetEntity(
                 id = 1L,
-                name = "Leafy Assistant",
-                iconTag = "eco",
-                tagline = "Default",
-                systemPrompt = "You are Leafy.",
-                temperature = 0.65f,
-                topP = 0.9f
+                name = "llama.cpp Default",
+                iconTag = "code",
+                tagline = "Standard llama.cpp sampling defaults",
+                systemPrompt = "You are a helpful, accurate, and concise assistant.",
+                temperature = 0.80f,
+                topK = 40,
+                topP = 0.95f,
+                minP = 0.05f,
+                xtcThreshold = 0.10f,
+                xtcProbability = 0.0f,
+                typicalP = 1.0f,
+                penaltyLastN = 64,
+                repeatPenalty = 1.0f,
+                penaltyFreq = 0.0f,
+                penaltyPresent = 0.0f,
+                mirostat = 0,
+                mirostatTau = 5.0f,
+                mirostatEta = 0.10f,
+                seed = -1,
+                jinjaEnabled = true
             )
 
             if (state.activeBranchMessages.isEmpty() || conv.title == "Local AI Session" || conv.title == "New Local Session") {
@@ -979,8 +1064,7 @@ class LeafyViewModel(
                 return@launch
             }
             val modelFileValid = withContext(Dispatchers.IO) {
-                val modelFile = File(model.localFilePath)
-                modelFile.exists() && modelFile.length() > 0L
+                fileManager.isModelFileAvailable(File(model.localFilePath))
             }
             if (!modelFileValid) {
                 showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
@@ -993,12 +1077,26 @@ class LeafyViewModel(
             val profile = state.powerProfile
             val persona = state.activePersona ?: PersonaPresetEntity(
                 id = 1L,
-                name = "Leafy Assistant",
-                iconTag = "eco",
-                tagline = "Default",
-                systemPrompt = "You are Leafy.",
-                temperature = 0.65f,
-                topP = 0.9f
+                name = "llama.cpp Default",
+                iconTag = "code",
+                tagline = "Standard llama.cpp sampling defaults",
+                systemPrompt = "You are a helpful, accurate, and concise assistant.",
+                temperature = 0.80f,
+                topK = 40,
+                topP = 0.95f,
+                minP = 0.05f,
+                xtcThreshold = 0.10f,
+                xtcProbability = 0.0f,
+                typicalP = 1.0f,
+                penaltyLastN = 64,
+                repeatPenalty = 1.0f,
+                penaltyFreq = 0.0f,
+                penaltyPresent = 0.0f,
+                mirostat = 0,
+                mirostatTau = 5.0f,
+                mirostatEta = 0.10f,
+                seed = -1,
+                jinjaEnabled = true
             )
 
             val priorHistory = state.activeBranchMessages
@@ -1049,8 +1147,7 @@ class LeafyViewModel(
                 return@launch
             }
             val modelFileValid = withContext(Dispatchers.IO) {
-                val modelFile = File(model.localFilePath)
-                modelFile.exists() && modelFile.length() > 0L
+                fileManager.isModelFileAvailable(File(model.localFilePath))
             }
             if (!modelFileValid) {
                 showTransientBanner("Model file not found on disk. Please reload it from the Local Models screen.")
@@ -1152,6 +1249,8 @@ class LeafyViewModel(
                     -1f
                 }
 
+                val currentState = uiState.value
+                val effectiveNPredict = if (currentState.nPredictUnlimited) -1 else currentState.customNPredict
                 inferenceEngine.streamResponse(
                     userPrompt = promptText,
                     model = model,
@@ -1162,7 +1261,11 @@ class LeafyViewModel(
                     conversationHistory = priorHistory,
                     branchAttemptIndex = branchAttemptIndex,
                     hardwareMeasuredMilliwatts = initialHwMw,
-                    enableThinking = uiState.value.enableThinking
+                    enableThinking = currentState.enableThinking,
+                    customContextSize = currentState.contextSize,
+                    nPredictLimit = effectiveNPredict,
+                    includeThinkingInContext = currentState.includeThinkingInContext,
+                    kvCacheType = currentState.kvCacheType
                 ).collect { step ->
                     finalStepText = step.accumulatedText
                     finalTps = step.currentTps
@@ -1498,16 +1601,18 @@ class LeafyViewModel(
         precomputedSha: String = "",
         silentInvalid: Boolean = false
     ): LocalModelEntity? = withContext(Dispatchers.IO) {
-        if (!file.exists() || file.length() < 8L) {
+        val accessibleFile = fileManager.ensureAccessibleFile(file)
+        val fileBytes = fileManager.getModelFileLength(accessibleFile)
+        if (!fileManager.isModelFileAvailable(accessibleFile) || fileBytes < 8L) {
             if (!silentInvalid) {
                 showTransientBanner("Selected file '$displayName' could not be read or is too small.")
             }
             return@withContext null
         }
 
-        if (fileManager.isCompanionTokenizerFile(displayName) || fileManager.isCompanionTokenizerFile(file.name)) {
+        if (fileManager.isCompanionTokenizerFile(displayName) || fileManager.isCompanionTokenizerFile(accessibleFile.name)) {
             if (!silentInvalid) {
-                showTransientBanner("Imported companion tokenizer '${displayName}' (${file.length() / 1024} KB) for ExecuTorch .pte models.")
+                showTransientBanner("Imported companion tokenizer '${displayName}' (${fileBytes / 1024} KB) for ExecuTorch .pte models.")
             }
             return@withContext null
         }
@@ -1549,9 +1654,9 @@ class LeafyViewModel(
 
         val detectedCtxWindow = ggufHeader.contextLength?.takeIf { it in 512..131072 } ?: 4096
 
-        val bytes = file.length()
+        val bytes = fileBytes
         val sizeMb = (bytes / (1024L * 1024L)).toInt().coerceAtLeast(1)
-        val shaHex = precomputedSha.ifBlank { fileManager.computeFileSha256Short(file) }
+        val shaHex = precomputedSha.ifBlank { fileManager.computeFileSha256Short(accessibleFile) }
 
         val headerSummary = when {
             ggufHeader.isValidGguf -> buildString {
@@ -1562,7 +1667,7 @@ class LeafyViewModel(
             }
             pteHeader.isValidPte -> "Verified ExecuTorch PTE binary (${pteHeader.magicString.trim()}) • ${bytes / 1024} KB"
             tmacHeader.isValidTmac -> "Verified T-MAC ${tmacHeader.formatType} binary • ${tmacHeader.tensorCount} LUT tensors"
-            else -> "Local model binary (${file.name}) • ${bytes / 1024} KB"
+            else -> "Local model binary ($displayName) • ${bytes / 1024} KB"
         }
 
         val cleanTitle = (ggufHeader.modelName?.takeIf { it.isNotBlank() } ?: displayName)
@@ -1576,7 +1681,12 @@ class LeafyViewModel(
             .trim()
             .ifBlank { displayName }
 
-        val modelId = "local-${shaHex.ifBlank { file.name.hashCode().toUInt().toString(16) }}"
+        val modelId = "local-${shaHex.ifBlank { displayName.hashCode().toUInt().toString(16) }}"
+        val pathLabel = if (accessibleFile.path.startsWith("/proc/self/fd/")) {
+            "$displayName (Shared Storage FD)"
+        } else {
+            accessibleFile.name
+        }
         val customModel = LocalModelEntity(
             id = modelId,
             name = cleanTitle,
@@ -1589,10 +1699,10 @@ class LeafyViewModel(
             contextWindow = detectedCtxWindow,
             expectedTps = 0f,
             ecoRating = 5,
-            specialty = "$headerSummary • Path: ${file.name}",
+            specialty = "$headerSummary • Path: $pathLabel",
             isInstalled = true,
             isUserImported = true,
-            localFilePath = file.absolutePath,
+            localFilePath = accessibleFile.path,
             sha256Short = shaHex,
             fileSizeBytes = bytes
         )
@@ -1679,7 +1789,7 @@ class LeafyViewModel(
         }
     }
 
-    // Persona Actions
+    // Preset Actions
     fun saveCustomPersona(
         name: String,
         tagline: String,
@@ -1687,26 +1797,58 @@ class LeafyViewModel(
         temperature: Float,
         topP: Float
     ) {
-        val cleanName = name.trim().take(80)
-        val cleanSystemPrompt = systemPrompt.trim().take(MAX_PERSONA_PROMPT_CHARS)
-        if (cleanName.isBlank()) return
-        viewModelScope.launch {
-            val id = repository.insertPersona(
-                PersonaPresetEntity(
-                    name = cleanName,
-                    iconTag = "psychology",
-                    tagline = tagline.trim().ifBlank { "Custom local persona" }.take(120),
-                    systemPrompt = cleanSystemPrompt,
-                    temperature = temperature,
-                    topP = topP,
-                    isBuiltIn = false
-                )
+        saveOrUpdatePreset(
+            PersonaPresetEntity(
+                id = 0L,
+                name = name,
+                iconTag = "psychology",
+                tagline = tagline,
+                systemPrompt = systemPrompt,
+                temperature = temperature,
+                topP = topP,
+                isBuiltIn = false
             )
+        )
+    }
+
+    fun saveOrUpdatePreset(preset: PersonaPresetEntity) {
+        val cleanName = preset.name.trim().take(80)
+        val cleanSystemPrompt = preset.systemPrompt.trim().take(MAX_PERSONA_PROMPT_CHARS)
+        if (cleanName.isBlank()) return
+        val normalized = preset.copy(
+            name = cleanName,
+            tagline = preset.tagline.trim().ifBlank { "Custom llama.cpp preset" }.take(120),
+            systemPrompt = cleanSystemPrompt,
+            temperature = preset.temperature.coerceIn(0f, 2f),
+            topK = preset.topK.coerceIn(0, 500),
+            topP = preset.topP.coerceIn(0.01f, 1.0f),
+            minP = preset.minP.coerceIn(0.0f, 1.0f),
+            xtcThreshold = preset.xtcThreshold.coerceIn(0.0f, 1.0f),
+            xtcProbability = preset.xtcProbability.coerceIn(0.0f, 1.0f),
+            typicalP = preset.typicalP.coerceIn(0.0f, 1.0f),
+            penaltyLastN = preset.penaltyLastN.coerceIn(-1, 2048),
+            repeatPenalty = preset.repeatPenalty.coerceIn(0.5f, 2.5f),
+            penaltyFreq = preset.penaltyFreq.coerceIn(0.0f, 2.0f),
+            penaltyPresent = preset.penaltyPresent.coerceIn(0.0f, 2.0f),
+            mirostat = preset.mirostat.coerceIn(0, 2),
+            mirostatTau = preset.mirostatTau.coerceIn(0.1f, 10.0f),
+            mirostatEta = preset.mirostatEta.coerceIn(0.01f, 1.0f)
+        )
+        viewModelScope.launch {
+            val existing = uiState.value.personas.any { it.id == normalized.id && normalized.id > 0L }
+            val activeId = if (existing) {
+                repository.updatePersona(normalized)
+                normalized.id
+            } else {
+                repository.insertPersona(normalized.copy(id = 0L, isBuiltIn = false))
+            }
             val conv = uiState.value.activeConversation
             if (conv != null) {
-                repository.updateConversation(conv.copy(activePersonaId = id))
+                repository.updateConversation(conv.copy(activePersonaId = activeId))
             }
-            showTransientBanner("Saved & activated persona '$cleanName'")
+            showTransientBanner(
+                if (existing) "Updated preset '$cleanName'" else "Saved & activated preset '$cleanName'"
+            )
         }
     }
 
@@ -1718,7 +1860,7 @@ class LeafyViewModel(
                 repository.updateConversation(conv.copy(activePersonaId = 1L))
             }
             repository.deletePersona(persona.id)
-            showTransientBanner("Deleted custom persona '${persona.name}'")
+            showTransientBanner("Deleted custom preset '${persona.name}'")
         }
     }
 
@@ -1782,6 +1924,11 @@ class LeafyViewModel(
         private const val KEY_USE_GRADIENT_TEXT = "use_gradient_text"
         private const val KEY_SHOW_CHAT_STATUS_BAR = "show_chat_status_bar"
         private const val KEY_ENABLE_THINKING = "enable_thinking"
+        private const val KEY_N_PREDICT_UNLIMITED = "n_predict_unlimited"
+        private const val KEY_CUSTOM_N_PREDICT = "custom_n_predict"
+        private const val KEY_CONTEXT_SIZE = "context_size"
+        private const val KEY_INCLUDE_THINKING_IN_CONTEXT = "include_thinking_in_context"
+        private const val KEY_KV_CACHE_TYPE = "kv_cache_type"
         private const val MAX_PROMPT_CHARS = 16_000
         private const val MAX_ASSISTANT_REPLY_CHARS = 32_000
         private const val MAX_RAG_CONTENT_CHARS = 24_000

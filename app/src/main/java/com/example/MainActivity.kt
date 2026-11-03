@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -50,6 +51,12 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PersonPin
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -64,11 +71,14 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
+import com.example.data.PowerProfile
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -194,7 +204,7 @@ fun LeafyAppShell(
                         LeafyTab.CHAT -> "Leafy"
                         LeafyTab.MODELS -> "Local Models"
                         LeafyTab.RUNTIMES -> "Inference Runtimes"
-                        LeafyTab.KNOWLEDGE -> "Local RAG & Persona Studio"
+                        LeafyTab.KNOWLEDGE -> "Local RAG & Presets Studio"
                         LeafyTab.ECO_SETTINGS -> "Settings & Telemetry"
                     }
 
@@ -264,6 +274,7 @@ fun LeafyAppShell(
                                 onDeleteRagDoc = viewModel::deleteRagDocument,
                                 onSelectPersona = viewModel::selectPersona,
                                 onSaveCustomPersona = viewModel::saveCustomPersona,
+                                onSaveOrUpdatePreset = viewModel::saveOrUpdatePreset,
                                 onDeleteCustomPersona = viewModel::deleteCustomPersona
                             )
 
@@ -282,20 +293,42 @@ fun LeafyAppShell(
         }
     }
 
-    // 1. Quick Settings Sheet (Opened via the single Three-Dots button on the Chat Home Screen)
-    if (showQuickSettingsMenu) {
-        ModalBottomSheet(
-            onDismissRequest = { showQuickSettingsMenu = false },
-            containerColor = MaterialTheme.colorScheme.surface
+    // 1. Quick Settings Right-Slide Menu (Opened via the Three-Dots button on the Chat Screen)
+    BackHandler(enabled = showQuickSettingsMenu) {
+        showQuickSettingsMenu = false
+    }
+    Box(modifier = Modifier.fillMaxSize()) {
+        AnimatedVisibility(
+            visible = showQuickSettingsMenu,
+            enter = fadeIn(),
+            exit = fadeOut()
         ) {
-            LeafyQuickSettingsSheet(
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .clickable { showQuickSettingsMenu = false }
+                    .testTag("quick_settings_scrim")
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showQuickSettingsMenu,
+            enter = slideInHorizontally(initialOffsetX = { it }),
+            exit = slideOutHorizontally(targetOffsetX = { it }),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            LeafyQuickSettingsSideMenu(
                 uiState = uiState,
-                onSelectPersona = viewModel::selectPersona,
-                onToggleDarkTheme = viewModel::toggleDarkTheme,
-                onOpenFullScreen = { tab ->
-                    showQuickSettingsMenu = false
-                    viewModel.selectTab(tab)
-                }
+                onDismiss = { showQuickSettingsMenu = false },
+                onSelectPowerProfile = viewModel::setPowerProfile,
+                onSetNPredictUnlimited = viewModel::setNPredictUnlimited,
+                onSetCustomNPredict = viewModel::setCustomNPredict,
+                onSelectPreset = viewModel::selectPersona,
+                onSetContextSize = viewModel::setContextSize,
+                onSetIncludeThinkingInContext = viewModel::setIncludeThinkingInContext,
+                onSetKvCacheType = viewModel::setKvCacheType,
+                onToggleDarkTheme = viewModel::toggleDarkTheme
             )
         }
     }
@@ -807,8 +840,8 @@ private fun LeafyCanopyNavigationDrawer(
                     item(key = "drawer_workspace_knowledge") {
                         DrawerWorkspaceCard(
                             icon = Icons.AutoMirrored.Filled.MenuBook,
-                            title = "RAG Knowledge & Personas",
-                            subtitle = "${uiState.pinnedRagDocuments.size} docs pinned • ${uiState.activePersona?.name ?: "Leafy Assistant"}",
+                            title = "RAG Knowledge & Presets",
+                            subtitle = "${uiState.pinnedRagDocuments.size} docs pinned • ${uiState.activePersona?.name ?: "llama.cpp Default"}",
                             isSelected = uiState.currentTab == LeafyTab.KNOWLEDGE,
                             onClick = { onNavigateToScreen(LeafyTab.KNOWLEDGE) },
                             testTag = "drawer_nav_knowledge"
@@ -1092,66 +1125,68 @@ private fun DrawerWorkspaceCard(
 }
 
 /**
- * Quick Settings Sheet (Opened via the single Three-Dots button on the Chat Home Screen):
- * Contains strictly session-level quick toggles (Active Persona quick-switch & Light/Dark Theme toggle)
- * plus direct navigation to the dedicated Settings & Telemetry or RAG & Personas screens.
- * Does NOT duplicate Power Profiles, Font Family, Living Gradient Text, or Custom Persona creation forms.
+ * Quick Settings Left-Slide Menu (Opened via the Three-Dots button on the Chat Screen):
+ * Contains strictly the 7 requested items:
+ * 1. Power Modes (Eco Leaf, Balanced Canopy, Sunlit Turbo)
+ * 2. N Predict (Maximum token generation limit: Unlimited vs Custom)
+ * 3. Active Preset (renamed from Active Persona)
+ * 4. Context Size Slider (Min = 2k, Max = 128k)
+ * 5. Include Thinking in Context Toggle
+ * 6. KV Cache Type (default Q8)
+ * 7. Light Mode / Dark Mode Toggle
+ * (Local Document RAG Box, RAG & Personas button, and All Settings button removed.)
  */
 @Composable
-private fun LeafyQuickSettingsSheet(
+private fun LeafyQuickSettingsSideMenu(
     uiState: LeafyUiState,
-    onSelectPersona: (com.example.data.PersonaPresetEntity) -> Unit,
-    onToggleDarkTheme: () -> Unit,
-    onOpenFullScreen: (LeafyTab) -> Unit
+    onDismiss: () -> Unit,
+    onSelectPowerProfile: (PowerProfile) -> Unit,
+    onSetNPredictUnlimited: (Boolean) -> Unit,
+    onSetCustomNPredict: (Int) -> Unit,
+    onSelectPreset: (com.example.data.PersonaPresetEntity) -> Unit,
+    onSetContextSize: (Int) -> Unit,
+    onSetIncludeThinkingInContext: (Boolean) -> Unit,
+    onSetKvCacheType: (String) -> Unit,
+    onToggleDarkTheme: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(brush = livingMenuSheetBrush())
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 8.dp)
-            ) {
-                Text(
-                    text = "Quick Settings",
-                    style = importantTextStyle(MaterialTheme.typography.titleLarge),
-                    color = importantTextColor(MaterialTheme.colorScheme.onSurface)
-                )
-                Text(
-                    text = "In-chat session persona & display theme",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+    var customNPredictText by rememberSaveable(uiState.customNPredict) {
+        mutableStateOf(uiState.customNPredict.toString())
+    }
+    val contextStepsK = rememberSaveable(uiState.contextSize) {
+        (uiState.contextSize / 1024).coerceIn(2, 128)
+    }
 
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = Color.Transparent,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+    Surface(
+        modifier = Modifier
+            .width(330.dp)
+            .fillMaxHeight()
+            .testTag("quick_settings_right_side_menu"),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 6.dp,
+        shadowElevation = 12.dp,
+        shape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(brush = livingMenuSheetBrush())
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(11.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .background(brush = livingSecondaryButtonBrush())
-                        .padding(horizontal = 9.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.BatteryChargingFull,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(13.dp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Quick Generation Menu",
+                        style = importantTextStyle(MaterialTheme.typography.titleLarge),
+                        color = importantTextColor(MaterialTheme.colorScheme.onSurface)
                     )
                     val sheetTps = when {
                         uiState.tpsTelemetry.instantTps > 0f -> uiState.tpsTelemetry.instantTps
@@ -1162,29 +1197,182 @@ private fun LeafyQuickSettingsSheet(
                     Text(
                         text = "$tpsPrefix${uiState.telemetry.batteryPercent}% • ${uiState.telemetry.batteryTempCelsius}°C",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            fontFamily = JetBrainsMonoFontFamily,
-                            fontWeight = FontWeight.Medium
+                            fontFamily = JetBrainsMonoFontFamily
                         ),
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                        .testTag("quick_settings_close_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close quick settings menu",
+                        tint = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
-        }
 
-        // 1. Active Persona & RAG Summary Row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+            HorizontalDivider()
+
+            // 1. Power Modes: Eco Leaf, Balanced Canopy, Sunlit Turbo
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "POWER MODES",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary
+                )
+                PowerProfile.entries.forEach { profile ->
+                    val isSelected = uiState.powerProfile == profile
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onSelectPowerProfile(profile) }
+                            .testTag("quick_menu_power_${profile.id}"),
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color.Transparent,
+                        border = BorderStroke(
+                            if (isSelected) 1.5.dp else 1.dp,
+                            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    brush = if (isSelected) {
+                                        livingActiveItemBrush(MaterialTheme.colorScheme.primary)
+                                    } else {
+                                        livingSurfaceCardBrush()
+                                    }
+                                )
+                                .padding(horizontal = 11.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = profile.displayName,
+                                    style = importantTextStyle(
+                                        MaterialTheme.typography.titleSmall.copy(
+                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+                                        )
+                                    ),
+                                    color = importantTextColor(MaterialTheme.colorScheme.onSurface)
+                                )
+                                Text(
+                                    text = profile.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = "Selected power mode",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. N Predict (Maximum Token Generation Limit)
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(brush = livingSurfaceCardBrush())
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "N PREDICT",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Maximum number of tokens to generate. Set to Unlimited for no limit, or Custom to specify a value.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val unlSelected = uiState.nPredictUnlimited
+                        Button(
+                            onClick = { onSetNPredictUnlimited(true) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (unlSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = if (unlSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            contentPadding = PaddingValues(vertical = 6.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_menu_n_predict_unlimited")
+                        ) {
+                            Text("Unlimited")
+                        }
+                        Button(
+                            onClick = { onSetNPredictUnlimited(false) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (!unlSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = if (!unlSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            contentPadding = PaddingValues(vertical = 6.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_menu_n_predict_custom")
+                        ) {
+                            Text("Custom")
+                        }
+                    }
+                    if (!uiState.nPredictUnlimited) {
+                        OutlinedTextField(
+                            value = customNPredictText,
+                            onValueChange = { raw ->
+                                customNPredictText = raw
+                                raw.trim().toIntOrNull()?.let { parsed ->
+                                    onSetCustomNPredict(parsed)
+                                }
+                            },
+                            label = { Text("Max Tokens (n_predict)") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("quick_menu_n_predict_input")
+                        )
+                    }
+                }
+            }
+
+            // 3. Active Preset (renamed from Active Persona)
             Surface(
                 modifier = Modifier
-                    .weight(1f)
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .clickable {
                         if (uiState.personas.isNotEmpty()) {
                             val idx = uiState.personas.indexOfFirst { it.id == uiState.activePersona?.id }
                             val next = uiState.personas[(idx + 1) % uiState.personas.size]
-                            onSelectPersona(next)
+                            onSelectPreset(next)
                         }
                     }
                     .testTag("menu_cycle_persona_card"),
@@ -1194,186 +1382,242 @@ private fun LeafyQuickSettingsSheet(
             ) {
                 Column(
                     modifier = Modifier
+                        .fillMaxWidth()
                         .background(brush = livingSecondaryHeroBrush())
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.PersonPin,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = "Active Persona",
-                            style = MaterialTheme.typography.labelSmall,
+                            text = "Active Preset",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                     }
                     Text(
-                        text = uiState.activePersona?.name ?: "Leafy Assistant",
+                        text = uiState.activePersona?.name ?: "llama.cpp Default",
                         style = importantTextStyle(MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)),
-                        color = importantTextColor(MaterialTheme.colorScheme.onSecondaryContainer),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
+                        color = importantTextColor(MaterialTheme.colorScheme.onSecondaryContainer)
                     )
+                    val activePreset = uiState.activePersona
                     Text(
-                        text = "Tap to cycle • T=${uiState.activePersona?.temperature ?: 0.65f}",
-                        style = MaterialTheme.typography.labelSmall,
+                        text = "Tap to cycle preset • T=${"%.2f".format(activePreset?.temperature ?: 0.80f)} • Top-K=${activePreset?.topK ?: 40} • Top-P=${"%.2f".format(activePreset?.topP ?: 0.95f)}",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                         color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
                     )
                 }
             }
 
+            // 4. Context Size Slider: Min = 2k, Max = 128k
             Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(16.dp))
-                    .clickable { onOpenFullScreen(LeafyTab.KNOWLEDGE) }
-                    .testTag("menu_open_rag_studio_card"),
                 shape = RoundedCornerShape(16.dp),
                 color = Color.Transparent,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f))
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
             ) {
                 Column(
                     modifier = Modifier
-                        .background(brush = livingTertiaryHeroBrush())
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                        .fillMaxWidth()
+                        .background(brush = livingSurfaceCardBrush())
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PushPin,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                            modifier = Modifier.size(15.dp)
+                        Text(
+                            text = "CONTEXT SIZE",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Local Document RAG",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                            text = "${contextStepsK}k (${uiState.contextSize} tok)",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                     Text(
-                        text = "${uiState.pinnedRagDocuments.size} of ${uiState.ragDocuments.size} Docs Pinned",
-                        style = importantTextStyle(MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)),
-                        color = importantTextColor(MaterialTheme.colorScheme.onTertiaryContainer),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
+                        text = "Min = 2k (2048), Max = 128k (131072)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Text(
-                        text = "Manage notes & personas →",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
+                    Slider(
+                        value = contextStepsK.toFloat(),
+                        onValueChange = { kVal ->
+                            val snappedK = kVal.toInt().coerceIn(2, 128)
+                            onSetContextSize(snappedK * 1024)
+                        },
+                        valueRange = 2f..128f,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("quick_menu_context_size_slider")
                     )
                 }
             }
-        }
 
-        // 2. Quick Display Theme Toggle (Exclusively in Quick Settings)
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = Color.Transparent,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(brush = livingSurfaceCardBrush())
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            // 5. Include Thinking in Context Toggle
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
             ) {
                 Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 8.dp),
+                        .fillMaxWidth()
+                        .background(brush = livingSurfaceCardBrush())
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        imageVector = if (uiState.isDarkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
                         Text(
-                            text = "Dark Moss Canopy Mode",
-                            style = importantTextStyle(MaterialTheme.typography.titleSmall),
-                            color = importantTextColor(MaterialTheme.colorScheme.onSurface)
+                            text = "INCLUDE THINKING IN CONTEXT",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = if (uiState.isDarkTheme) {
-                                "OLED Dark Canopy active"
-                            } else {
-                                "Bright Sunlit Botanical active"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
+                            text = "Include AI thinking/reasoning parts in the context sent to the model.",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    Switch(
+                        checked = uiState.includeThinkingInContext,
+                        onCheckedChange = onSetIncludeThinkingInContext,
+                        modifier = Modifier.testTag("quick_menu_include_thinking_switch")
+                    )
                 }
+            }
 
-                Switch(
-                    checked = uiState.isDarkTheme,
-                    onCheckedChange = { onToggleDarkTheme() },
-                    modifier = Modifier.testTag("quick_settings_theme_switch")
-                )
+            // 6. KV Cache Type (default Q8)
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(brush = livingSurfaceCardBrush())
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "KV CACHE TYPE",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Default: Q8",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    val kvOptions = listOf(
+                        "Q8_0" to "Q8",
+                        "F16" to "F16",
+                        "Q4_0" to "Q4",
+                        "F32" to "F32"
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        kvOptions.forEach { (typeCode, label) ->
+                            val selected = uiState.kvCacheType.equals(typeCode, ignoreCase = true)
+                            Button(
+                                onClick = { onSetKvCacheType(typeCode) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("quick_menu_kv_${label.lowercase()}")
+                            ) {
+                                Text(label, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 7. Light Mode / Dark Mode Toggle as usual
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(brush = livingSurfaceCardBrush())
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (uiState.isDarkTheme) Icons.Default.DarkMode else Icons.Default.LightMode,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Light / Dark Mode",
+                                style = importantTextStyle(MaterialTheme.typography.titleSmall),
+                                color = importantTextColor(MaterialTheme.colorScheme.onSurface)
+                            )
+                            Text(
+                                text = if (uiState.isDarkTheme) {
+                                    "Dark Moss Canopy active"
+                                } else {
+                                    "Light Sunlit Botanical active"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = uiState.isDarkTheme,
+                        onCheckedChange = { onToggleDarkTheme() },
+                        modifier = Modifier.testTag("quick_settings_theme_switch")
+                    )
+                }
             }
         }
-
-        // 3. Dedicated Screen Launchers (Full Settings & Telemetry / RAG & Persona Studio)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = { onOpenFullScreen(LeafyTab.KNOWLEDGE) },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("quick_settings_open_knowledge_button")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.MenuBook,
-                    contentDescription = null,
-                    modifier = Modifier.size(15.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("RAG & Personas")
-            }
-
-            Button(
-                onClick = { onOpenFullScreen(LeafyTab.ECO_SETTINGS) },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.Transparent,
-                    contentColor = livingBrightButtonContentColor()
-                ),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(50))
-                    .background(brush = livingBrightButtonBrush())
-                    .testTag("quick_settings_open_full_settings_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = null,
-                    modifier = Modifier.size(15.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("All Settings")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
     }
 }

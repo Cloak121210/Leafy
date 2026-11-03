@@ -19,15 +19,14 @@ class LeafyRepository(private val dao: LeafyDao) {
             dao.insertPersonas(defaultPersonas())
         } else {
             val existing = dao.observePersonas().firstOrNull() ?: emptyList()
-            if (existing.none { it.isBuiltIn && it.name.equals("Blank", ignoreCase = true) }) {
-                val blankPreset = defaultPersonas().firstOrNull { it.name == "Blank" }
-                if (blankPreset != null) {
-                    val safeBlank = if (existing.any { it.id == blankPreset.id }) {
-                        blankPreset.copy(id = 0L)
+            for (builtIn in defaultPersonas()) {
+                if (existing.none { it.name.equals(builtIn.name, ignoreCase = true) }) {
+                    val safePreset = if (existing.any { it.id == builtIn.id }) {
+                        builtIn.copy(id = 0L)
                     } else {
-                        blankPreset
+                        builtIn
                     }
-                    dao.insertPersona(safeBlank)
+                    dao.insertPersona(safePreset)
                 }
             }
         }
@@ -123,46 +122,122 @@ class LeafyRepository(private val dao: LeafyDao) {
         fun defaultPersonas(): List<PersonaPresetEntity> = listOf(
             PersonaPresetEntity(
                 id = 1L,
+                name = "llama.cpp Default",
+                iconTag = "tune",
+                tagline = "Standard llama.cpp sampler defaults • Customizable",
+                systemPrompt = "",
+                temperature = 0.80f,
+                topK = 40,
+                topP = 0.95f,
+                minP = 0.05f,
+                xtcThreshold = 0.10f,
+                xtcProbability = 0.0f,
+                typicalP = 1.0f,
+                penaltyLastN = 64,
+                repeatPenalty = 1.0f,
+                penaltyFreq = 0.0f,
+                penaltyPresent = 0.0f,
+                mirostat = 0,
+                mirostatTau = 5.0f,
+                mirostatEta = 0.10f,
+                seed = -1,
+                jinjaEnabled = true,
+                isBuiltIn = true
+            ),
+            PersonaPresetEntity(
+                id = 2L,
                 name = "Leafy Assistant",
                 iconTag = "eco",
                 tagline = "Direct, privacy-first local AI assistant",
                 systemPrompt = "You are Leafy, a privacy-preserving on-device AI assistant. Provide clear, accurate answers grounded in any pinned local RAG documents.",
                 temperature = 0.65f,
+                topK = 40,
                 topP = 0.90f,
+                minP = 0.05f,
+                xtcThreshold = 0.10f,
+                xtcProbability = 0.0f,
+                typicalP = 1.0f,
+                penaltyLastN = 64,
                 repeatPenalty = 1.10f,
+                penaltyFreq = 0.0f,
+                penaltyPresent = 0.0f,
+                mirostat = 0,
+                mirostatTau = 5.0f,
+                mirostatEta = 0.10f,
+                seed = -1,
+                jinjaEnabled = true,
                 isBuiltIn = true
             ),
             PersonaPresetEntity(
-                id = 2L,
+                id = 3L,
                 name = "Edge Systems Architect",
                 iconTag = "code",
                 tagline = "Quantization, C++/Rust/Kotlin & embedded AI specialist",
                 systemPrompt = "You are an expert systems engineer specializing in on-device LLM inference (llama.cpp, Bitnet.cpp, T-MAC lookup tables, ExecuTorch) and clean Kotlin/C++ architecture.",
                 temperature = 0.35f,
+                topK = 40,
                 topP = 0.85f,
+                minP = 0.05f,
+                xtcThreshold = 0.10f,
+                xtcProbability = 0.0f,
+                typicalP = 1.0f,
+                penaltyLastN = 64,
                 repeatPenalty = 1.15f,
+                penaltyFreq = 0.0f,
+                penaltyPresent = 0.0f,
+                mirostat = 0,
+                mirostatTau = 5.0f,
+                mirostatEta = 0.10f,
+                seed = -1,
+                jinjaEnabled = true,
                 isBuiltIn = true
             ),
             PersonaPresetEntity(
-                id = 3L,
+                id = 4L,
                 name = "Socratic Study Partner",
                 iconTag = "school",
                 tagline = "Guides understanding with step-by-step questions",
                 systemPrompt = "You are a patient Socratic tutor. Break complex ideas into clear steps, verify assumptions, and end with one follow-up question.",
                 temperature = 0.70f,
+                topK = 40,
                 topP = 0.92f,
+                minP = 0.05f,
+                xtcThreshold = 0.10f,
+                xtcProbability = 0.0f,
+                typicalP = 1.0f,
+                penaltyLastN = 64,
                 repeatPenalty = 1.08f,
+                penaltyFreq = 0.0f,
+                penaltyPresent = 0.0f,
+                mirostat = 0,
+                mirostatTau = 5.0f,
+                mirostatEta = 0.10f,
+                seed = -1,
+                jinjaEnabled = true,
                 isBuiltIn = true
             ),
             PersonaPresetEntity(
-                id = 4L,
+                id = 5L,
                 name = "Blank",
                 iconTag = "eco",
                 tagline = "No system prompt • Raw conversation turns",
                 systemPrompt = "",
-                temperature = 0.70f,
-                topP = 0.90f,
-                repeatPenalty = 1.10f,
+                temperature = 0.80f,
+                topK = 40,
+                topP = 0.95f,
+                minP = 0.05f,
+                xtcThreshold = 0.10f,
+                xtcProbability = 0.0f,
+                typicalP = 1.0f,
+                penaltyLastN = 64,
+                repeatPenalty = 1.0f,
+                penaltyFreq = 0.0f,
+                penaltyPresent = 0.0f,
+                mirostat = 0,
+                mirostatTau = 5.0f,
+                mirostatEta = 0.10f,
+                seed = -1,
+                jinjaEnabled = true,
                 isBuiltIn = true
             )
         )

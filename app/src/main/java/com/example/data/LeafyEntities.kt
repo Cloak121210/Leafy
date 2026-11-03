@@ -101,30 +101,42 @@ enum class PowerProfile(
     val badgeText: String,
     val description: String,
     val cpuThreads: Int,
+    val targetCorePowerFraction: Float,
+    val androidThreadPriority: Int,
+    val preferredBatchSize: Int,
     val contextLimit: Int
 ) {
     ECO(
         id = "ECO",
         displayName = "Eco Leaf",
-        badgeText = "Eco • 2 Threads",
-        description = "Caps native inference thread pool to 2 CPU threads and 2048 context tokens.",
-        cpuThreads = 2,
+        badgeText = "1 Big Core • Half Freq",
+        description = "1 big core at its half frequency",
+        cpuThreads = 1,
+        targetCorePowerFraction = 0.50f,
+        androidThreadPriority = 10, // Process.THREAD_PRIORITY_BACKGROUND (50% capacity request on 1 core)
+        preferredBatchSize = 256,
         contextLimit = 2048
     ),
     BALANCED(
         id = "BALANCED",
         displayName = "Balanced Canopy",
-        badgeText = "Balanced • 4 Threads",
-        description = "Allocates 4 CPU threads and up to 4096 context tokens for native inference.",
-        cpuThreads = 4,
+        badgeText = "2 Big Cores • Half Freq",
+        description = "2 big cores at the biggest core's half frequency",
+        cpuThreads = 2,
+        targetCorePowerFraction = 0.50f,
+        androidThreadPriority = 5, // Process.THREAD_PRIORITY_DEFAULT + 5 (50% capacity request across 2 big cores)
+        preferredBatchSize = 384,
         contextLimit = 4096
     ),
     PERFORMANCE(
         id = "PERFORMANCE",
-        displayName = "Sunburst Turbo",
-        badgeText = "Turbo • 8 Threads",
-        description = "Allocates up to 8 CPU threads and up to 8192 context tokens for native inference.",
-        cpuThreads = 8,
+        displayName = "Sunlit Turbo",
+        badgeText = "2 Big Cores • Top Freq",
+        description = "2 big cores at their top frequency",
+        cpuThreads = 2,
+        targetCorePowerFraction = 1.00f,
+        androidThreadPriority = -8, // Process.THREAD_PRIORITY_URGENT_DISPLAY (100% top frequency request on 2 big cores)
+        preferredBatchSize = 512,
         contextLimit = 8192
     );
 
@@ -202,11 +214,25 @@ data class RagDocumentEntity(
 data class PersonaPresetEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val iconTag: String,
-    val tagline: String,
-    val systemPrompt: String,
-    val temperature: Float,
-    val topP: Float,
-    val repeatPenalty: Float = 1.1f,
+    val iconTag: String = "tune",
+    val tagline: String = "",
+    val systemPrompt: String = "",
+    val temperature: Float = 0.80f,
+    val topK: Int = 40,
+    val topP: Float = 0.95f,
+    val minP: Float = 0.05f,
+    val xtcThreshold: Float = 0.10f,
+    val xtcProbability: Float = 0.0f,
+    val typicalP: Float = 1.0f,
+    val penaltyLastN: Int = 64,
+    val repeatPenalty: Float = 1.0f,
+    val penaltyFreq: Float = 0.0f,
+    val penaltyPresent: Float = 0.0f,
+    val mirostat: Int = 0, // 0 = Off, 1 = v1, 2 = v2
+    val mirostatTau: Float = 5.0f,
+    val mirostatEta: Float = 0.10f,
+    val seed: Int = -1,
+    val jinjaEnabled: Boolean = true,
     val isBuiltIn: Boolean = true
 )
+

@@ -78,6 +78,9 @@ import com.example.ui.components.livingTertiaryHeroBrush
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.viewmodel.LeafyUiState
 
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.runtime.mutableIntStateOf
+
 @Composable
 fun KnowledgeAndPersonasScreen(
     uiState: LeafyUiState,
@@ -87,13 +90,17 @@ fun KnowledgeAndPersonasScreen(
     onDeleteRagDoc: (Long) -> Unit,
     onSelectPersona: (PersonaPresetEntity) -> Unit,
     onSaveCustomPersona: (String, String, String, Float, Float) -> Unit,
+    onSaveOrUpdatePreset: (PersonaPresetEntity) -> Unit = { preset ->
+        onSaveCustomPersona(preset.name, preset.tagline, preset.systemPrompt, preset.temperature, preset.topP)
+    },
     onDeleteCustomPersona: (PersonaPresetEntity) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
     var showAddDocDialog by rememberSaveable { mutableStateOf(false) }
-    var showAddPersonaDialog by rememberSaveable { mutableStateOf(false) }
+    var editingPreset by rememberSaveable { mutableStateOf<Long?>(null) }
+    var showNewPresetDialog by rememberSaveable { mutableStateOf(false) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -401,7 +408,7 @@ fun KnowledgeAndPersonasScreen(
                 }
             }
 
-            // 3. System Prompt Templates & Persona Presets Section
+            // 3. Chat Generation Settings (Presets) Section
             item {
                 Spacer(modifier = Modifier.height(2.dp))
                 Row(
@@ -415,18 +422,18 @@ fun KnowledgeAndPersonasScreen(
                             .padding(end = 6.dp)
                     ) {
                         Text(
-                            text = "System Prompt & Persona Presets",
+                            text = "Chat Generation Presets",
                             style = importantTextStyle(MaterialTheme.typography.titleMedium),
                             color = importantTextColor(MaterialTheme.colorScheme.onBackground)
                         )
                         Text(
-                            text = "Customize system instructions, temperature, and top-p sampling",
+                            text = "Bundled llama.cpp sampler parameters & system prompts (llama.cpp Default active by default)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     OutlinedButton(
-                        onClick = { showAddPersonaDialog = true },
+                        onClick = { showNewPresetDialog = true },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         modifier = Modifier.testTag("add_custom_persona_button")
                     ) {
@@ -509,6 +516,19 @@ fun KnowledgeAndPersonasScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
+                                OutlinedButton(
+                                    onClick = { editingPreset = persona.id },
+                                    contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp),
+                                    modifier = Modifier.testTag("customize_preset_${persona.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Customize preset",
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Customize")
+                                }
                                 Button(
                                     onClick = { onSelectPersona(persona) },
                                     enabled = !isSelected,
@@ -539,7 +559,7 @@ fun KnowledgeAndPersonasScreen(
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text("Active")
                                     } else {
-                                        Text("Use Persona")
+                                        Text("Use Preset")
                                     }
                                 }
                                 if (!persona.isBuiltIn) {
@@ -551,7 +571,7 @@ fun KnowledgeAndPersonasScreen(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.DeleteOutline,
-                                            contentDescription = "Delete custom persona",
+                                            contentDescription = "Delete custom preset",
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.size(18.dp)
                                         )
@@ -580,8 +600,13 @@ fun KnowledgeAndPersonasScreen(
                             )
                         }
 
+                        val mirostatLabel = when (persona.mirostat) {
+                            1 -> "v1"
+                            2 -> "v2"
+                            else -> "Off"
+                        }
                         Text(
-                            text = "Sampling: Temperature = ${"%.2f".format(persona.temperature)} • Top-P = ${"%.2f".format(persona.topP)} • Repeat Penalty = ${"%.2f".format(persona.repeatPenalty)}",
+                            text = "Temp=${"%.2f".format(persona.temperature)} • Top-K=${persona.topK} • Top-P=${"%.2f".format(persona.topP)} • Min-P=${"%.2f".format(persona.minP)} • Repeat=${"%.2f".format(persona.repeatPenalty)} (LastN=${persona.penaltyLastN}) • Mirostat=$mirostatLabel • Seed=${persona.seed} • Jinja=${if (persona.jinjaEnabled) "On" else "Off"}",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontFamily = JetBrainsMonoFontFamily
                             ),
@@ -666,96 +691,430 @@ fun KnowledgeAndPersonasScreen(
         )
     }
 
-    if (showAddPersonaDialog) {
-        var name by rememberSaveable { mutableStateOf("") }
-        var tagline by rememberSaveable { mutableStateOf("") }
-        var systemPrompt by rememberSaveable { mutableStateOf("You are a concise, privacy-first local AI specialist.") }
-        var temperature by rememberSaveable { mutableFloatStateOf(0.65f) }
-        var topP by rememberSaveable { mutableFloatStateOf(0.90f) }
+    val activeEditingPreset = editingPreset?.let { targetId ->
+        uiState.personas.find { it.id == targetId }
+    }
+    if (showNewPresetDialog || activeEditingPreset != null) {
+        val initialPreset = activeEditingPreset ?: PersonaPresetEntity(
+            id = 0L,
+            name = "",
+            iconTag = "code",
+            tagline = "Custom llama.cpp sampler preset",
+            systemPrompt = "You are a concise, privacy-first local AI specialist.",
+            temperature = 0.80f,
+            topK = 40,
+            topP = 0.95f,
+            minP = 0.05f,
+            xtcThreshold = 0.10f,
+            xtcProbability = 0.0f,
+            typicalP = 1.0f,
+            penaltyLastN = 64,
+            repeatPenalty = 1.0f,
+            penaltyFreq = 0.0f,
+            penaltyPresent = 0.0f,
+            mirostat = 0,
+            mirostatTau = 5.0f,
+            mirostatEta = 0.10f,
+            seed = -1,
+            jinjaEnabled = true,
+            isBuiltIn = false
+        )
+        ChatGenerationPresetEditorDialog(
+            initialPreset = initialPreset,
+            isEditingExisting = activeEditingPreset != null,
+            onDismiss = {
+                showNewPresetDialog = false
+                editingPreset = null
+            },
+            onSave = { updatedPreset ->
+                onSaveOrUpdatePreset(updatedPreset)
+                showNewPresetDialog = false
+                editingPreset = null
+            }
+        )
+    }
+}
 
-        AlertDialog(
-            onDismissRequest = { showAddPersonaDialog = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-            title = {
-                Text(
-                    text = "Add Custom Preset",
-                    style = importantTextStyle(MaterialTheme.typography.titleMedium),
-                    color = importantTextColor(MaterialTheme.colorScheme.onSurface)
-                )
-            },
-            text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("Preset Name") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("new_persona_name_input")
-                    )
-                    OutlinedTextField(
-                        value = tagline,
-                        onValueChange = { tagline = it },
-                        label = { Text("Short Tagline") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = systemPrompt,
-                        onValueChange = { systemPrompt = it },
-                        label = { Text("System Prompt Instructions (leave empty for blank)") },
-                        minLines = 3,
-                        maxLines = 5,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("new_persona_prompt_input")
-                    )
-                    Text(
-                        text = "Temperature: ${"%.2f".format(temperature)}",
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                    Slider(
-                        value = temperature,
-                        onValueChange = { temperature = it },
-                        valueRange = 0.1f..1.2f
-                    )
-                    Text(
-                        text = "Top-P: ${"%.2f".format(topP)}",
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                    Slider(
-                        value = topP,
-                        onValueChange = { topP = it },
-                        valueRange = 0.5f..1.0f
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onSaveCustomPersona(name, tagline, systemPrompt, temperature, topP)
-                        showAddPersonaDialog = false
-                    },
-                    enabled = name.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.Transparent,
-                        contentColor = livingBrightButtonContentColor()
-                    ),
+@Composable
+private fun ChatGenerationPresetEditorDialog(
+    initialPreset: PersonaPresetEntity,
+    isEditingExisting: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (PersonaPresetEntity) -> Unit
+) {
+    var name by rememberSaveable(initialPreset.id) { mutableStateOf(initialPreset.name) }
+    var tagline by rememberSaveable(initialPreset.id) { mutableStateOf(initialPreset.tagline) }
+    var systemPrompt by rememberSaveable(initialPreset.id) { mutableStateOf(initialPreset.systemPrompt) }
+
+    var temperature by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.temperature) }
+    var topK by rememberSaveable(initialPreset.id) { mutableIntStateOf(initialPreset.topK) }
+    var topP by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.topP) }
+    var minP by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.minP) }
+    var xtcThreshold by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.xtcThreshold) }
+    var xtcProbability by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.xtcProbability) }
+    var typicalP by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.typicalP) }
+    var penaltyLastN by rememberSaveable(initialPreset.id) { mutableIntStateOf(initialPreset.penaltyLastN) }
+    var repeatPenalty by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.repeatPenalty) }
+    var penaltyFreq by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.penaltyFreq) }
+    var penaltyPresent by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.penaltyPresent) }
+    var mirostat by rememberSaveable(initialPreset.id) { mutableIntStateOf(initialPreset.mirostat) }
+    var mirostatTau by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.mirostatTau) }
+    var mirostatEta by rememberSaveable(initialPreset.id) { mutableFloatStateOf(initialPreset.mirostatEta) }
+    var seedText by rememberSaveable(initialPreset.id) { mutableStateOf(initialPreset.seed.toString()) }
+    var jinjaEnabled by rememberSaveable(initialPreset.id) { mutableStateOf(initialPreset.jinjaEnabled) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = {
+            Text(
+                text = if (isEditingExisting) "Chat Generation Settings (${initialPreset.name})" else "Chat Generation Settings (New Preset)",
+                style = importantTextStyle(MaterialTheme.typography.titleMedium),
+                color = importantTextColor(MaterialTheme.colorScheme.onSurface)
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Preset Name") },
+                    singleLine = true,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(brush = livingBrightButtonBrush())
-                        .testTag("confirm_save_persona_button")
-                ) {
-                    Text("Save & Activate")
+                        .fillMaxWidth()
+                        .testTag("new_persona_name_input")
+                )
+                OutlinedTextField(
+                    value = tagline,
+                    onValueChange = { tagline = it },
+                    label = { Text("Short Tagline") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = systemPrompt,
+                    onValueChange = { systemPrompt = it },
+                    label = { Text("System Prompt Instructions (leave empty for blank)") },
+                    minLines = 2,
+                    maxLines = 4,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("new_persona_prompt_input")
+                )
+
+                // TEMPERATURE
+                PresetFloatSliderBlock(
+                    title = "TEMPERATURE",
+                    subtitle = "Control creativity vs predictability. Higher values make responses more creative but less focused.",
+                    value = temperature,
+                    onValueChange = { temperature = it },
+                    valueRange = 0.0f..2.0f
+                )
+
+                // TOP K
+                PresetIntSliderBlock(
+                    title = "TOP K",
+                    subtitle = "Control creativity by limiting word choices to the K most likely options. Lower values make responses more focused.",
+                    value = topK,
+                    onValueChange = { topK = it },
+                    valueRange = 0f..200f
+                )
+
+                // TOP P
+                PresetFloatSliderBlock(
+                    title = "TOP P",
+                    subtitle = "Balance creativity and coherence. Higher values (near 1.0) allow more creative but potentially less focused responses.",
+                    value = topP,
+                    onValueChange = { topP = it },
+                    valueRange = 0.05f..1.0f
+                )
+
+                // MIN P
+                PresetFloatSliderBlock(
+                    title = "MIN P",
+                    subtitle = "The minimum probability for a token to be considered. Filter out unlikely words to reduce nonsensical or out-of-context responses.",
+                    value = minP,
+                    onValueChange = { minP = it },
+                    valueRange = 0.0f..0.5f
+                )
+
+                // XTC THRESHOLD
+                PresetFloatSliderBlock(
+                    title = "XTC THRESHOLD",
+                    subtitle = "Set a minimum probability threshold for tokens to be removed via XTC sampler. (> 0.5 disables XTC)",
+                    value = xtcThreshold,
+                    onValueChange = { xtcThreshold = it },
+                    valueRange = 0.0f..1.0f
+                )
+
+                // XTC PROBABILITY
+                PresetFloatSliderBlock(
+                    title = "XTC PROBABILITY",
+                    subtitle = "Set the chance for token removal via XTC sampler. 0 is disabled.",
+                    value = xtcProbability,
+                    onValueChange = { xtcProbability = it },
+                    valueRange = 0.0f..1.0f
+                )
+
+                // TYPICAL P
+                PresetFloatSliderBlock(
+                    title = "TYPICAL P",
+                    subtitle = "Enable locally typical sampling with parameter p. 1.0 is disabled.",
+                    value = typicalP,
+                    onValueChange = { typicalP = it },
+                    valueRange = 0.1f..1.0f
+                )
+
+                // PENALTY LAST N
+                PresetIntSliderBlock(
+                    title = "PENALTY LAST N",
+                    subtitle = "How far back to check for repetition. Larger values help prevent long-term repetition.",
+                    value = penaltyLastN,
+                    onValueChange = { penaltyLastN = it },
+                    valueRange = 0f..512f
+                )
+
+                // PENALTY REPEAT
+                PresetFloatSliderBlock(
+                    title = "PENALTY REPEAT",
+                    subtitle = "Discourage word repetition. Higher values make responses use more diverse language.",
+                    value = repeatPenalty,
+                    onValueChange = { repeatPenalty = it },
+                    valueRange = 0.8f..2.0f
+                )
+
+                // PENALTY FREQ
+                PresetFloatSliderBlock(
+                    title = "PENALTY FREQ",
+                    subtitle = "Penalize overused words. Higher values encourage using a broader vocabulary.",
+                    value = penaltyFreq,
+                    onValueChange = { penaltyFreq = it },
+                    valueRange = 0.0f..2.0f
+                )
+
+                // PENALTY PRESENT
+                PresetFloatSliderBlock(
+                    title = "PENALTY PRESENT",
+                    subtitle = "Reduce repetition of themes and ideas. Higher values encourage more diverse content.",
+                    value = penaltyPresent,
+                    onValueChange = { penaltyPresent = it },
+                    valueRange = 0.0f..2.0f
+                )
+
+                // Mirostat (Off | v1 | v2)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Mirostat",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    Text(
+                        text = "Enable advanced control over response creativity. Set to 1 or 2 (smoother) for smart, real-time adjustments to randomness and coherence.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(0 to "Off", 1 to "v1", 2 to "v2").forEach { (modeVal, label) ->
+                            val selected = mirostat == modeVal
+                            Button(
+                                onClick = { mirostat = modeVal },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                contentPadding = PaddingValues(vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("preset_mirostat_$label")
+                            ) {
+                                Text(label)
+                            }
+                        }
+                    }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddPersonaDialog = false }) {
-                    Text("Cancel")
+
+                // MIROSTAT TAU
+                PresetFloatSliderBlock(
+                    title = "MIROSTAT TAU",
+                    subtitle = "Set the target creativity level for Mirostat. Higher values allow for more diverse and imaginative responses.",
+                    value = mirostatTau,
+                    onValueChange = { mirostatTau = it },
+                    valueRange = 0.5f..10.0f
+                )
+
+                // MIROSTAT ETA
+                PresetFloatSliderBlock(
+                    title = "MIROSTAT ETA",
+                    subtitle = "How quickly Mirostat adjusts creativity. Higher values mean faster adjustments.",
+                    value = mirostatEta,
+                    onValueChange = { mirostatEta = it },
+                    valueRange = 0.01f..1.0f
+                )
+
+                // SEED
+                OutlinedTextField(
+                    value = seedText,
+                    onValueChange = { seedText = it },
+                    label = { Text("SEED (-1 for random)") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("preset_seed_input")
+                )
+
+                // JINJA
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
+                    ) {
+                        Text(
+                            text = "JINJA",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = "Enable Jinja templating for chat formatting.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = jinjaEnabled,
+                        onCheckedChange = { jinjaEnabled = it },
+                        modifier = Modifier.testTag("preset_jinja_switch")
+                    )
                 }
             }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val parsedSeed = seedText.trim().toIntOrNull() ?: -1
+                    onSave(
+                        initialPreset.copy(
+                            name = name,
+                            tagline = tagline,
+                            systemPrompt = systemPrompt,
+                            temperature = temperature,
+                            topK = topK,
+                            topP = topP,
+                            minP = minP,
+                            xtcThreshold = xtcThreshold,
+                            xtcProbability = xtcProbability,
+                            typicalP = typicalP,
+                            penaltyLastN = penaltyLastN,
+                            repeatPenalty = repeatPenalty,
+                            penaltyFreq = penaltyFreq,
+                            penaltyPresent = penaltyPresent,
+                            mirostat = mirostat,
+                            mirostatTau = mirostatTau,
+                            mirostatEta = mirostatEta,
+                            seed = parsedSeed,
+                            jinjaEnabled = jinjaEnabled
+                        )
+                    )
+                },
+                enabled = name.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = livingBrightButtonContentColor()
+                ),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(brush = livingBrightButtonBrush())
+                    .testTag("confirm_save_persona_button")
+            ) {
+                Text(if (isEditingExisting) "Save Preset" else "Save & Activate")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+private fun PresetFloatSliderBlock(
+    title: String,
+    subtitle: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+            )
+            Text(
+                text = "%.2f".format(value),
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange
+        )
+    }
+}
+
+@Composable
+private fun PresetIntSliderBlock(
+    title: String,
+    subtitle: String,
+    value: Int,
+    onValueChange: (Int) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+            )
+            Text(
+                text = value.toString(),
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onValueChange(it.toInt()) },
+            valueRange = valueRange
         )
     }
 }

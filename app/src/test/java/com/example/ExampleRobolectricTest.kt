@@ -22,8 +22,8 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
         assertEquals("Leafy", appName)
-        assertEquals("0.9.8.5", BuildConfig.VERSION_NAME)
-        assertEquals(20, BuildConfig.VERSION_CODE)
+        assertEquals("0.9.9.4", BuildConfig.VERSION_NAME)
+        assertEquals(25, BuildConfig.VERSION_CODE)
     }
 
     @Test
@@ -69,6 +69,18 @@ class ExampleRobolectricTest {
         val eco = PowerProfile.ECO
         val balanced = PowerProfile.BALANCED
         val turbo = PowerProfile.PERFORMANCE
+
+        assertEquals("Eco Leaf", eco.displayName)
+        assertEquals("1 big core at its half frequency", eco.description)
+        assertEquals(1, eco.cpuThreads)
+
+        assertEquals("Balanced Canopy", balanced.displayName)
+        assertEquals("2 big cores at the biggest core's half frequency", balanced.description)
+        assertEquals(2, balanced.cpuThreads)
+
+        assertEquals("Sunlit Turbo", turbo.displayName)
+        assertEquals("2 big cores at their top frequency", turbo.description)
+        assertEquals(2, turbo.cpuThreads)
 
         assertTrue(eco.cpuThreads <= balanced.cpuThreads)
         assertTrue(balanced.cpuThreads <= turbo.cpuThreads)
@@ -575,8 +587,28 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `defaultPersonas includes Blank preset and buildFormattedPrompt omits system role when blank`() {
+    fun `defaultPersonas includes Blank preset and llama_cpp Default preset with standard sampler parameters`() {
         val defaults = com.example.data.LeafyRepository.defaultPersonas()
+        val llamaDefault = defaults.first()
+        assertEquals(1L, llamaDefault.id)
+        assertEquals("llama.cpp Default", llamaDefault.name)
+        assertEquals(0.80f, llamaDefault.temperature, 0.001f)
+        assertEquals(40, llamaDefault.topK)
+        assertEquals(0.95f, llamaDefault.topP, 0.001f)
+        assertEquals(0.05f, llamaDefault.minP, 0.001f)
+        assertEquals(0.10f, llamaDefault.xtcThreshold, 0.001f)
+        assertEquals(0.0f, llamaDefault.xtcProbability, 0.001f)
+        assertEquals(1.0f, llamaDefault.typicalP, 0.001f)
+        assertEquals(64, llamaDefault.penaltyLastN)
+        assertEquals(1.0f, llamaDefault.repeatPenalty, 0.001f)
+        assertEquals(0.0f, llamaDefault.penaltyFreq, 0.001f)
+        assertEquals(0.0f, llamaDefault.penaltyPresent, 0.001f)
+        assertEquals(0, llamaDefault.mirostat)
+        assertEquals(5.0f, llamaDefault.mirostatTau, 0.001f)
+        assertEquals(0.10f, llamaDefault.mirostatEta, 0.001f)
+        assertEquals(-1, llamaDefault.seed)
+        assertEquals(true, llamaDefault.jinjaEnabled)
+
         val blankPreset = defaults.find { it.name == "Blank" && it.isBuiltIn }
         assertTrue("Default personas must include a built-in Blank preset", blankPreset != null)
         assertEquals("", blankPreset?.systemPrompt)

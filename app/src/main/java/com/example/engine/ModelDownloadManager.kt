@@ -45,6 +45,10 @@ class ModelDownloadManager(private val context: Context) {
     fun deleteModelFile(filePath: String): Boolean {
         if (filePath.isBlank()) return false
         return try {
+            if (filePath.startsWith("/proc/self/fd/")) {
+                Companion.releasePinnedDescriptor(context, filePath)
+                return false
+            }
             val file = File(filePath)
             // Only delete files inside our app's modelsDir so we never delete a user's external original file if referenced directly
             if (file.exists() && file.absolutePath.startsWith(modelsDir.absolutePath)) {
@@ -91,10 +95,16 @@ class ModelDownloadManager(private val context: Context) {
                 }
                 if (!fdLink.isNullOrBlank() && !fdLink.startsWith("/proc/")) {
                     candidates.add(File(fdLink))
-                    if (fdLink.startsWith("/mnt/user/0/emulated/0/")) {
-                        candidates.add(File("/storage/emulated/0/" + fdLink.removePrefix("/mnt/user/0/emulated/0/")))
-                    } else if (fdLink.startsWith("/data/media/0/")) {
-                        candidates.add(File("/storage/emulated/0/" + fdLink.removePrefix("/data/media/0/")))
+                    val emulatedRel = when {
+                        fdLink.contains("/emulated/0/") -> fdLink.substringAfter("/emulated/0/")
+                        fdLink.startsWith("/data/media/0/") -> fdLink.removePrefix("/data/media/0/")
+                        else -> null
+                    }
+                    if (!emulatedRel.isNullOrBlank()) {
+                        candidates.add(File("/storage/emulated/0/$emulatedRel"))
+                        try {
+                            candidates.add(File(Environment.getExternalStorageDirectory(), emulatedRel))
+                        } catch (_: Throwable) {}
                     }
                 }
             }
@@ -129,6 +139,8 @@ class ModelDownloadManager(private val context: Context) {
                     candidates.add(File(dlDir, fallbackDisplayName))
                 }
             } catch (_: Throwable) {}
+            candidates.add(File("/storage/emulated/0/Download/$fallbackDisplayName"))
+            candidates.add(File("/storage/emulated/0/Downloads/$fallbackDisplayName"))
         }
 
         return candidates.firstOrNull { f ->
@@ -141,9 +153,26 @@ class ModelDownloadManager(private val context: Context) {
     }
 
     /**
+     * Opens and pins a read-only ParcelFileDescriptor for in-place zero-copy model access via `/proc/self/fd/<fd>`
+     * when Android Scoped Storage blocks direct filesystem path opening.
+     */
+    fun openPinnedProcFdFile(uri: Uri, displayName: String, fallbackSizeBytes: Long = 0L): Pair<File, Long>? {
+        return Companion.openAndPinUriDescriptor(context, modelsDir, uri, displayName, fallbackSizeBytes)
+    }
+
+    fun ensureAccessibleFile(file: File): File =
+        Companion.ensureModelFileAccessible(context, modelsDir, file)
+
+    fun isModelFileAvailable(file: File): Boolean =
+        Companion.isModelFileAvailable(context, modelsDir, file)
+
+    fun getModelFileLength(file: File): Long =
+        Companion.getModelFileLength(context, modelsDir, file)
+
+    /**
      * Loads a local model file from a user-selected Android Uri (content:// or file://).
      * When [copyToAppStorage] is true, copies the file into the app's local models directory.
-     * When [copyToAppStorage] is false, keeps the model in internal shared storage and references its path in-place.
+     * When [copyToAppStorage] is false, keeps the model in internal shared storage and references its path or pinned FD in-place.
      */
     fun importModelFromUri(uri: Uri, copyToAppStorage: Boolean = true): Flow<LocalModelLoadStatus> = flow {
         var tempFile: File? = null
@@ -226,6 +255,24 @@ class ModelDownloadManager(private val context: Context) {
                         )
                     )
                     return@flow
+                }
+
+                val pinnedPair = openPinnedProcFdFile(uri, displayName, totalBytes)
+                if (pinnedPair != null && pinnedPair.second > 0L) {
+                    val (pinnedFile, fileLen) = pinnedPair
+                    val sha = computeFileSha256Short(pinnedFile)
+                    emit(
+                        LocalModelLoadStatus(
+                            displayName = displayName,
+                            progress = 1.0f,
+                            copiedBytes = fileLen,
+                            totalBytes = fileLen,
+                            localFilePath = pinnedFile.path,
+                            sha256Short = sha,
+                            isComplete = true
+                        )
+                    )
+                    return@flow
                 } else {
                     emit(
                         LocalModelLoadStatus(
@@ -235,7 +282,7 @@ class ModelDownloadManager(private val context: Context) {
                             totalBytes = totalBytes,
                             localFilePath = "",
                             isComplete = false,
-                            error = "Android Scoped Storage blocks direct C++ POSIX path access to '$displayName' in its current folder. Please choose 'Copy to App Storage' instead."
+                            error = "Could not open read descriptor for '$displayName' in shared storage."
                         )
                     )
                     return@flow
@@ -477,10 +524,11 @@ class ModelDownloadManager(private val context: Context) {
     }
 
     fun computeFileSha256Short(file: File): String {
-        if (!file.exists() || file.length() <= 0L) return ""
+        val fileLen = getModelFileLength(file)
+        if (!isModelFileAvailable(file) || fileLen <= 0L) return ""
         return try {
             val digest = MessageDigest.getInstance("SHA-256")
-            FileInputStream(file).use { fis ->
+            Companion.openModelInputStream(context, modelsDir, file)?.use { fis ->
                 val buffer = ByteArray(64 * 1024)
                 var totalRead = 0L
                 val maxSample = 1024L * 1024L
@@ -489,11 +537,243 @@ class ModelDownloadManager(private val context: Context) {
                     digest.update(buffer, 0, read)
                     totalRead += read
                 }
-            }
-            digest.update(file.length().toString().toByteArray(Charsets.UTF_8))
+            } ?: return ""
+            digest.update(fileLen.toString().toByteArray(Charsets.UTF_8))
             digest.digest().joinToString("") { "%02x".format(it) }.take(8)
         } catch (_: Exception) {
             ""
+        }
+    }
+
+    companion object {
+        private data class PinnedDescriptorEntry(
+            val pfd: ParcelFileDescriptor,
+            val uriString: String,
+            val displayName: String,
+            val sizeBytes: Long
+        )
+
+        private val pinnedLock = Any()
+        private val pinnedByProcPath = mutableMapOf<String, PinnedDescriptorEntry>()
+        private const val PINNED_URIS_PREFS = "leafy_pinned_shared_uris"
+
+        private fun resolveDescriptorSize(pfd: ParcelFileDescriptor, fallbackSize: Long = 0L): Long {
+            val statSize = try { pfd.statSize } catch (_: Throwable) { -1L }
+            if (statSize > 0L) return statSize
+            val fstatSize = try { Os.fstat(pfd.fileDescriptor).st_size } catch (_: Throwable) { -1L }
+            if (fstatSize > 0L) return fstatSize
+            return fallbackSize.coerceAtLeast(0L)
+        }
+
+        fun openAndPinUriDescriptor(
+            context: Context,
+            @Suppress("UNUSED_PARAMETER") modelsDir: File?,
+            uri: Uri,
+            displayName: String,
+            fallbackSizeBytes: Long = 0L
+        ): Pair<File, Long>? = synchronized(pinnedLock) {
+            return try {
+                val uriStr = uri.toString()
+                // Reuse existing pinned descriptor if same URI is already open and valid
+                val existing = pinnedByProcPath.entries.firstOrNull { (_, entry) ->
+                    entry.uriString == uriStr && try { entry.pfd.fd >= 0 } catch (_: Throwable) { false }
+                }
+                if (existing != null) {
+                    val len = resolveDescriptorSize(existing.value.pfd, existing.value.sizeBytes.coerceAtLeast(fallbackSizeBytes))
+                    if (len > 0L) {
+                        return Pair(File(existing.key), len)
+                    }
+                }
+
+                val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
+                val rawFd = try { pfd.fd } catch (_: Throwable) { -1 }
+                if (rawFd < 0) {
+                    try { pfd.close() } catch (_: Throwable) {}
+                    return null
+                }
+                val sizeBytes = resolveDescriptorSize(pfd, fallbackSizeBytes)
+                val procPath = "/proc/self/fd/$rawFd"
+                pinnedByProcPath[procPath] = PinnedDescriptorEntry(
+                    pfd = pfd,
+                    uriString = uriStr,
+                    displayName = displayName,
+                    sizeBytes = sizeBytes
+                )
+                try {
+                    context.applicationContext
+                        .getSharedPreferences(PINNED_URIS_PREFS, Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("path:$procPath", uriStr)
+                        .putString("name:$displayName", uriStr)
+                        .putLong("size:$uriStr", sizeBytes)
+                        .apply()
+                } catch (_: Throwable) {}
+                Pair(File(procPath), sizeBytes)
+            } catch (_: Throwable) {
+                null
+            }
+        }
+
+        fun ensureModelFileAccessible(
+            context: Context?,
+            modelsDir: File? = null,
+            file: File,
+            displayNameHint: String? = null
+        ): File = synchronized(pinnedLock) {
+            val path = file.path
+            if (!path.startsWith("/proc/self/fd/")) {
+                return file
+            }
+            val existing = pinnedByProcPath[path]
+            if (existing != null) {
+                val valid = try {
+                    existing.pfd.fd >= 0 && Os.fstat(existing.pfd.fileDescriptor).st_size > 0L
+                } catch (_: Throwable) {
+                    false
+                }
+                if (valid) return file
+                pinnedByProcPath.remove(path)
+            }
+            if (context != null) {
+                try {
+                    val prefs = context.applicationContext.getSharedPreferences(PINNED_URIS_PREFS, Context.MODE_PRIVATE)
+                    val uriStr = prefs.getString("path:$path", null)
+                        ?: displayNameHint?.let { prefs.getString("name:$it", null) }
+                    if (!uriStr.isNullOrBlank()) {
+                        val savedSize = prefs.getLong("size:$uriStr", 0L)
+                        val reopened = openAndPinUriDescriptor(
+                            context = context,
+                            modelsDir = modelsDir,
+                            uri = Uri.parse(uriStr),
+                            displayName = displayNameHint ?: file.name,
+                            fallbackSizeBytes = savedSize
+                        )
+                        if (reopened != null) {
+                            return reopened.first
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+            return file
+        }
+
+        fun getModelFileLength(
+            context: Context?,
+            modelsDir: File? = null,
+            file: File,
+            displayNameHint: String? = null
+        ): Long = synchronized(pinnedLock) {
+            val resolved = ensureModelFileAccessible(context, modelsDir, file, displayNameHint)
+            val path = resolved.path
+            if (path.startsWith("/proc/self/fd/")) {
+                val entry = pinnedByProcPath[path]
+                if (entry != null) {
+                    return resolveDescriptorSize(entry.pfd, entry.sizeBytes)
+                }
+                val fdNum = path.removePrefix("/proc/self/fd/").toIntOrNull()
+                if (fdNum != null && fdNum >= 0) {
+                    try {
+                        val dupPfd = ParcelFileDescriptor.fromFd(fdNum)
+                        val sz = resolveDescriptorSize(dupPfd, 0L)
+                        try { dupPfd.close() } catch (_: Throwable) {}
+                        if (sz > 0L) return sz
+                    } catch (_: Throwable) {}
+                }
+            }
+            return try {
+                resolved.length()
+            } catch (_: Throwable) {
+                0L
+            }
+        }
+
+        fun isModelFileAvailable(
+            context: Context?,
+            modelsDir: File? = null,
+            file: File,
+            displayNameHint: String? = null
+        ): Boolean = synchronized(pinnedLock) {
+            val resolved = ensureModelFileAccessible(context, modelsDir, file, displayNameHint)
+            val path = resolved.path
+            if (path.startsWith("/proc/self/fd/")) {
+                return getModelFileLength(context, modelsDir, resolved, displayNameHint) > 0L
+            }
+            return try {
+                resolved.exists() && resolved.length() > 0L
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
+        fun openDuplicatedDescriptor(
+            context: Context?,
+            modelsDir: File? = null,
+            file: File,
+            displayNameHint: String? = null
+        ): ParcelFileDescriptor? = synchronized(pinnedLock) {
+            val resolved = ensureModelFileAccessible(context, modelsDir, file, displayNameHint)
+            val path = resolved.path
+            if (path.startsWith("/proc/self/fd/")) {
+                val entry = pinnedByProcPath[path]
+                if (entry != null) {
+                    return try {
+                        val dup = entry.pfd.dup()
+                        try { Os.lseek(dup.fileDescriptor, 0L, android.system.OsConstants.SEEK_SET) } catch (_: Throwable) {}
+                        dup
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+                val fdNum = path.removePrefix("/proc/self/fd/").toIntOrNull()
+                if (fdNum != null && fdNum >= 0) {
+                    return try {
+                        val dup = ParcelFileDescriptor.fromFd(fdNum)
+                        try { Os.lseek(dup.fileDescriptor, 0L, android.system.OsConstants.SEEK_SET) } catch (_: Throwable) {}
+                        dup
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+            }
+            return try {
+                ParcelFileDescriptor.open(resolved, ParcelFileDescriptor.MODE_READ_ONLY)
+            } catch (_: Throwable) {
+                null
+            }
+        }
+
+        fun openModelInputStream(
+            context: Context?,
+            modelsDir: File? = null,
+            file: File,
+            displayNameHint: String? = null
+        ): InputStream? {
+            val resolved = ensureModelFileAccessible(context, modelsDir, file, displayNameHint)
+            if (!resolved.path.startsWith("/proc/self/fd/")) {
+                try {
+                    if (resolved.exists() && resolved.canRead()) {
+                        return FileInputStream(resolved)
+                    }
+                } catch (_: Throwable) {}
+            }
+            val dupPfd = openDuplicatedDescriptor(context, modelsDir, resolved, displayNameHint) ?: return null
+            return ParcelFileDescriptor.AutoCloseInputStream(dupPfd)
+        }
+
+        fun releasePinnedDescriptor(context: Context?, procPath: String) = synchronized(pinnedLock) {
+            val removed = pinnedByProcPath.remove(procPath)
+            if (removed != null) {
+                try { removed.pfd.close() } catch (_: Throwable) {}
+            }
+            if (context != null) {
+                try {
+                    context.applicationContext
+                        .getSharedPreferences(PINNED_URIS_PREFS, Context.MODE_PRIVATE)
+                        .edit()
+                        .remove("path:$procPath")
+                        .apply()
+                } catch (_: Throwable) {}
+            }
         }
     }
 }

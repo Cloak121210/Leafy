@@ -4,6 +4,8 @@ import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PerformanceHintManager
+import android.os.Process
 import com.example.data.AiRuntime
 import com.example.data.LocalModelEntity
 import com.example.data.MessageNodeEntity
@@ -225,15 +227,31 @@ class LocalInferenceEngine(
     suspend fun loadModelIntoRam(
         model: LocalModelEntity,
         runtime: AiRuntime,
-        powerProfile: PowerProfile
+        powerProfile: PowerProfile,
+        customContextSize: Int = 0,
+        kvCacheType: String = "Q8_0"
     ): Result<String> = withContext(Dispatchers.IO) {
         inferenceMutex.withLock {
             try {
-                val modelFile = File(model.localFilePath)
-                if (!modelFile.exists() || modelFile.length() <= 0L) {
+                val modelFile = ModelDownloadManager.ensureModelFileAccessible(
+                    context = context,
+                    file = File(model.localFilePath),
+                    displayNameHint = model.name
+                )
+                val modelFileLen = ModelDownloadManager.getModelFileLength(
+                    context = context,
+                    file = modelFile,
+                    displayNameHint = model.name
+                )
+                if (!ModelDownloadManager.isModelFileAvailable(context, file = modelFile, displayNameHint = model.name) || modelFileLen <= 0L) {
                     return@withLock Result.failure(
                         IllegalStateException("Model file '${model.name}' does not exist on disk.")
                     )
+                }
+                val desiredCtx = if (customContextSize >= 2048) {
+                    customContextSize.coerceIn(2048, 131072)
+                } else {
+                    powerProfile.contextLimit
                 }
                 if (runtime == AiRuntime.EXECUTORCH) {
                     val pteHeader = readPteHeader(modelFile)
@@ -245,7 +263,7 @@ class LocalInferenceEngine(
                     unmountLlamaContextLocked()
                     synchronized(nativeHandleLock) {
                         mountedModelPath = modelFile.absolutePath
-                        mountedCtxSize = powerProfile.contextLimit
+                        mountedCtxSize = desiredCtx
                         mountedThreads = powerProfile.cpuThreads
                         _mountedModelPathFlow.value = mountedModelPath
                     }
@@ -269,11 +287,13 @@ class LocalInferenceEngine(
                 }
 
                 val modelTrainedCtx = headerInfo.contextLength?.takeIf { it >= 512 } ?: model.contextWindow.coerceAtLeast(2048)
-                val requestedCtx = powerProfile.contextLimit.coerceAtMost(modelTrainedCtx).coerceIn(512, 4096)
+                val requestedCtx = desiredCtx.coerceAtMost(modelTrainedCtx.coerceAtLeast(desiredCtx)).coerceIn(512, 131072)
                 val effectivePrimaryCtx = if (memAssessment.availMemMb < 1024L) {
                     requestedCtx.coerceAtMost(1024)
+                } else if (memAssessment.availMemMb < 2048L) {
+                    requestedCtx.coerceAtMost(4096)
                 } else {
-                    requestedCtx.coerceAtMost(2048)
+                    requestedCtx
                 }
                 val clampedThreads = powerProfile.cpuThreads.coerceIn(1, 8)
                 val canonicalPath = modelFile.absolutePath
@@ -284,7 +304,7 @@ class LocalInferenceEngine(
                         if (mountedNativeBridgeHandle != 0L &&
                             mountedNativeEngineId == engineId &&
                             mountedModelPath == canonicalPath &&
-                            mountedCtxSize in 512..4096
+                            mountedCtxSize in 512..131072
                         ) {
                             return@withLock Result.success(
                                 "'${model.name}' is already loaded in RAM on ${runtime.displayName} (${mountedCtxSize} ctx)."
@@ -328,8 +348,13 @@ class LocalInferenceEngine(
 
                     if (handle == 0L) {
                         val nativeErr = LeafyNativeBridge.nativeGetLastError().trim()
+                        val tmacArchNote = if (runtime == AiRuntime.T_MAC &&
+                            (headerInfo.architecture == "qwen3" || headerInfo.quantizationLabel.contains("ftype=41") || headerInfo.quantizationLabel.contains("Q1_0", ignoreCase = true))
+                        ) {
+                            " [Note: bundled libtmac_llama.so (kaleid-liner/llama.cpp eb07ecf) supports GGUF tensor types 0..39 (Llama/BitNet Q4_0, TQ1_0, TQ2_0, INT2 LUT) and does not include '${headerInfo.architecture ?: "qwen3"}' / type 41 (Q1_0); use llama.cpp or Bitnet.cpp for '${model.name}'.]"
+                        } else ""
                         return@withLock Result.failure(
-                            IllegalStateException("Native $engineId failed to load '${model.name}' into RAM (${nativeErr.ifBlank { "nativeLoadModel returned 0L" }}).")
+                            IllegalStateException("Native $engineId failed to load '${model.name}' into RAM (${nativeErr.ifBlank { "nativeLoadModel returned 0L" }})$tmacArchNote.")
                         )
                     }
 
@@ -341,7 +366,8 @@ class LocalInferenceEngine(
                         modelFile = modelFile,
                         requestedCtx = requestedCtx,
                         requestedThreads = clampedThreads,
-                        preferredBatchSize = 512
+                        preferredBatchSize = powerProfile.preferredBatchSize,
+                        kvCacheType = kvCacheType
                     )
                     if (llamaCtx.context != 0L) {
                         return@withLock Result.success(
@@ -484,12 +510,28 @@ class LocalInferenceEngine(
         @Suppress("UNUSED_PARAMETER") branchAttemptIndex: Int = 1,
         conversationHistory: List<MessageNodeEntity> = emptyList(),
         hardwareMeasuredMilliwatts: Float = -1f,
-        enableThinking: Boolean = false
+        enableThinking: Boolean = false,
+        customContextSize: Int = 0,
+        nPredictLimit: Int = -1,
+        includeThinkingInContext: Boolean = false,
+        kvCacheType: String = "Q8_0"
     ): Flow<StreamingStep> = flow {
         isCancelled = false
 
-        val modelFile = File(model.localFilePath)
-        if (!model.isInstalled || model.localFilePath.isBlank() || !modelFile.exists() || modelFile.length() <= 0L) {
+        val modelFile = ModelDownloadManager.ensureModelFileAccessible(
+            context = context,
+            file = File(model.localFilePath),
+            displayNameHint = model.name
+        )
+        val modelFileLen = ModelDownloadManager.getModelFileLength(
+            context = context,
+            file = modelFile,
+            displayNameHint = model.name
+        )
+        if (!model.isInstalled || model.localFilePath.isBlank() ||
+            !ModelDownloadManager.isModelFileAvailable(context, file = modelFile, displayNameHint = model.name) ||
+            modelFileLen <= 0L
+        ) {
             emit(
                 StreamingStep(
                     accumulatedText = "Error: Local AI model weights not found on device ('${model.name}').\n\nPlease load a valid local model file from your device storage in the Local Models screen.",
@@ -526,7 +568,8 @@ class LocalInferenceEngine(
             ragSnippets = retrievedRag,
             conversationHistory = conversationHistory,
             enableThinking = enableThinking,
-            modelNameHint = model.name
+            modelNameHint = model.name,
+            includeThinkingInContext = includeThinkingInContext
         )
 
         when (runtime) {
@@ -542,7 +585,11 @@ class LocalInferenceEngine(
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
                         hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
-                        enableThinking = enableThinking
+                        enableThinking = enableThinking,
+                        customContextSize = customContextSize,
+                        nPredictLimit = nPredictLimit,
+                        includeThinkingInContext = includeThinkingInContext,
+                        kvCacheType = kvCacheType
                     )
                 )
             }
@@ -558,7 +605,11 @@ class LocalInferenceEngine(
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
                         hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
-                        enableThinking = enableThinking
+                        enableThinking = enableThinking,
+                        customContextSize = customContextSize,
+                        nPredictLimit = nPredictLimit,
+                        includeThinkingInContext = includeThinkingInContext,
+                        kvCacheType = kvCacheType
                     )
                 )
             }
@@ -573,7 +624,10 @@ class LocalInferenceEngine(
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
                         hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
-                        enableThinking = enableThinking
+                        enableThinking = enableThinking,
+                        customContextSize = customContextSize,
+                        nPredictLimit = nPredictLimit,
+                        includeThinkingInContext = includeThinkingInContext
                     )
                 )
             }
@@ -589,7 +643,11 @@ class LocalInferenceEngine(
                         retrievedRag = retrievedRag,
                         conversationHistory = conversationHistory,
                         hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
-                        enableThinking = enableThinking
+                        enableThinking = enableThinking,
+                        customContextSize = customContextSize,
+                        nPredictLimit = nPredictLimit,
+                        includeThinkingInContext = includeThinkingInContext,
+                        kvCacheType = kvCacheType
                     )
                 )
             }
@@ -605,7 +663,8 @@ class LocalInferenceEngine(
     )
 
     private fun assessDeviceMemoryForModel(modelFile: File): DeviceMemoryAssessment {
-        val modelSizeMb = (modelFile.length() / (1024L * 1024L)).coerceAtLeast(1L)
+        val rawLen = ModelDownloadManager.getModelFileLength(context, file = modelFile)
+        val modelSizeMb = (rawLen / (1024L * 1024L)).coerceAtLeast(1L)
         val activityManager = context?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         if (activityManager == null) {
             return DeviceMemoryAssessment(
@@ -633,7 +692,8 @@ class LocalInferenceEngine(
     }
 
     internal fun openDetachedModelFd(modelFile: File): Int {
-        val pfd = ParcelFileDescriptor.open(modelFile, ParcelFileDescriptor.MODE_READ_ONLY)
+        val pfd = ModelDownloadManager.openDuplicatedDescriptor(context, file = modelFile)
+            ?: ParcelFileDescriptor.open(modelFile, ParcelFileDescriptor.MODE_READ_ONLY)
             ?: throw IllegalStateException("Unable to open read-only file descriptor for '${modelFile.name}'.")
         val fd = try {
             pfd.detachFd()
@@ -648,15 +708,106 @@ class LocalInferenceEngine(
         return fd
     }
 
+    /**
+     * Computes the Android ADPF (`PerformanceHintManager.Session`) target work duration in nanoseconds
+     * for a measured step duration so the OS `schedutil` / `uclamp` governor allocates the requested
+     * fraction of core power/capacity (`0.50f` = half frequency/power request, `1.00f` = top frequency request).
+     *
+     * Since ADPF capacity demand scales with `actualDuration / targetDuration`:
+     * - For `targetCorePowerFraction = 0.50f` (Eco Leaf / Balanced Canopy), `targetDuration = actualDuration * 2`,
+     *   so `actual / target = 0.50` (50% capacity request per active core).
+     * - For `targetCorePowerFraction = 1.00f` (Sunlit Turbo), `targetDuration = actualDuration / 2`,
+     *   so `actual / target = 2.0` (clamped to 100% top frequency boost).
+     */
+    internal fun computeAdpfTargetDurationNanos(
+        actualWorkDurationNanos: Long,
+        targetCorePowerFraction: Float
+    ): Long {
+        val safeActual = actualWorkDurationNanos.coerceIn(500_000L, 500_000_000L)
+        val clampedFraction = targetCorePowerFraction.coerceIn(0.10f, 1.00f)
+        return if (clampedFraction >= 0.99f) {
+            (safeActual / 2L).coerceAtLeast(250_000L)
+        } else {
+            (safeActual.toDouble() / clampedFraction.toDouble()).toLong().coerceAtLeast(safeActual + 100_000L)
+        }
+    }
+
+    internal inner class PowerProfileGovernorSession(
+        private val powerProfile: PowerProfile
+    ) : AutoCloseable {
+        private var previousThreadPriority: Int? = null
+        private var adpfSession: PerformanceHintManager.Session? = null
+        private var lastStepTimestampNanos: Long = System.nanoTime()
+
+        init {
+            try {
+                val tid = Process.myTid()
+                previousThreadPriority = Process.getThreadPriority(tid)
+                Process.setThreadPriority(powerProfile.androidThreadPriority)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val hintManager = context?.getSystemService(PerformanceHintManager::class.java)
+                    val initialActualNanos = 10_000_000L // 10ms baseline decode step
+                    val initialTargetNanos = computeAdpfTargetDurationNanos(
+                        actualWorkDurationNanos = initialActualNanos,
+                        targetCorePowerFraction = powerProfile.targetCorePowerFraction
+                    )
+                    val session = hintManager?.createHintSession(intArrayOf(tid), initialTargetNanos)
+                    session?.reportActualWorkDuration(initialActualNanos)
+                    adpfSession = session
+                }
+            } catch (_: Throwable) {
+                // Non-fatal on JVM unit tests or devices without PerformanceHintManager HAL
+            }
+        }
+
+        fun onTokenSampled() {
+            val now = System.nanoTime()
+            val elapsedNanos = (now - lastStepTimestampNanos).coerceIn(500_000L, 250_000_000L)
+            lastStepTimestampNanos = now
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val session = adpfSession ?: return
+                try {
+                    val targetNanos = computeAdpfTargetDurationNanos(
+                        actualWorkDurationNanos = elapsedNanos,
+                        targetCorePowerFraction = powerProfile.targetCorePowerFraction
+                    )
+                    session.updateTargetWorkDuration(targetNanos)
+                    session.reportActualWorkDuration(elapsedNanos)
+                } catch (_: Throwable) {}
+            }
+        }
+
+        override fun close() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    adpfSession?.close()
+                } catch (_: Throwable) {}
+                adpfSession = null
+            }
+            val prev = previousThreadPriority
+            if (prev != null) {
+                try {
+                    Process.setThreadPriority(prev)
+                } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    internal fun openPowerProfileGovernorSession(powerProfile: PowerProfile): PowerProfileGovernorSession =
+        PowerProfileGovernorSession(powerProfile)
+
     internal fun buildLlamaContextParams(
         canonicalPath: String,
         modelFd: Int,
         nCtx: Int,
         nBatch: Int,
         nThreads: Int,
-        useMmap: Boolean
+        useMmap: Boolean,
+        kvCacheType: String = "Q8_0"
     ): Map<String, Any> {
         require(modelFd >= 0) { "model_fd must be a non-negative file descriptor (was $modelFd)" }
+        val normalizedCacheType = kvCacheType.trim().uppercase().ifBlank { "Q8_0" }
         return mapOf(
             "model" to canonicalPath,
             "model_fd" to modelFd,
@@ -671,7 +822,9 @@ class LocalInferenceEngine(
             "lora" to "",
             "lora_scaled" to 1.0,
             "rope_freq_base" to 0.0,
-            "rope_freq_scale" to 0.0
+            "rope_freq_scale" to 0.0,
+            "cache_type_k" to normalizedCacheType,
+            "cache_type_v" to normalizedCacheType
         )
     }
 
@@ -705,7 +858,8 @@ class LocalInferenceEngine(
         modelFile: File,
         requestedCtx: Int,
         requestedThreads: Int,
-        preferredBatchSize: Int = 512
+        preferredBatchSize: Int = 512,
+        kvCacheType: String = "Q8_0"
     ): LlamaContext {
         val canonicalPath = modelFile.absolutePath
         val header = readGgufHeader(modelFile)
@@ -722,7 +876,7 @@ class LocalInferenceEngine(
             )
         }
 
-        val primaryCtxSize = requestedCtx.coerceIn(512, 4096)
+        val primaryCtxSize = requestedCtx.coerceIn(512, 131072)
         val clampedThreads = requestedThreads.coerceIn(1, 8)
 
         val memAssessment = assessDeviceMemoryForModel(modelFile)
@@ -735,7 +889,7 @@ class LocalInferenceEngine(
         val effectivePrimaryCtx = if (memAssessment.availMemMb < 1024L) {
             primaryCtxSize.coerceAtMost(1024)
         } else {
-            primaryCtxSize.coerceAtMost(2048)
+            primaryCtxSize
         }
         val primaryBatch = minOf(preferredBatchSize, 512)
 
@@ -778,6 +932,13 @@ class LocalInferenceEngine(
                 isFallback = false
             ),
             InitAttempt(
+                nCtx = 2048,
+                nBatch = 512,
+                nThreads = clampedThreads,
+                useMmap = true,
+                isFallback = true
+            ),
+            InitAttempt(
                 nCtx = 512,
                 nBatch = 512,
                 nThreads = 0,
@@ -817,7 +978,8 @@ class LocalInferenceEngine(
                     nCtx = attempt.nCtx,
                     nBatch = attempt.nBatch,
                     nThreads = attempt.nThreads,
-                    useMmap = attempt.useMmap
+                    useMmap = attempt.useMmap,
+                    kvCacheType = kvCacheType
                 )
                 val ctxId = abs(Random.nextInt(1, Int.MAX_VALUE))
                 val llamaCtx = LlamaContext(ctxId, params)
@@ -852,26 +1014,30 @@ class LocalInferenceEngine(
         )
     }
 
-    private fun computeGenerationTokenBudget(effectiveCtxSize: Int): Int {
-        val safeCtx = effectiveCtxSize.coerceIn(512, 4096)
-        return (safeCtx / 2).coerceIn(256, 768)
+    private fun computeGenerationTokenBudget(effectiveCtxSize: Int, nPredictLimit: Int = -1): Int {
+        val safeCtx = effectiveCtxSize.coerceIn(512, 131072)
+        if (nPredictLimit > 0) {
+            return nPredictLimit.coerceIn(1, safeCtx.coerceAtLeast(256))
+        }
+        return (safeCtx / 2).coerceIn(256, 4096)
     }
 
     private fun computeMaxPromptChars(effectiveCtxSize: Int, nPredict: Int): Int {
-        val safeCtx = effectiveCtxSize.coerceIn(512, 4096)
-        val availablePromptTokens = (safeCtx - nPredict - 32).coerceIn(128, 1536)
-        return (availablePromptTokens * 3).coerceIn(384, 4096)
+        val safeCtx = effectiveCtxSize.coerceIn(512, 131072)
+        val availablePromptTokens = (safeCtx - minOf(nPredict, safeCtx / 2) - 32).coerceIn(128, 32768)
+        return (availablePromptTokens * 3).coerceIn(384, 32768)
     }
 
     private fun filterRecentHistory(
         history: List<MessageNodeEntity>,
         maxTurns: Int = 6,
-        maxCharsPerTurn: Int = 500
+        maxCharsPerTurn: Int = 500,
+        includeThinkingInContext: Boolean = false
     ): List<MessageNodeEntity> {
         if (history.isEmpty() || maxTurns <= 0) return emptyList()
         return history
             .map { node ->
-                if (node.role.equals("ASSISTANT", ignoreCase = true)) {
+                if (node.role.equals("ASSISTANT", ignoreCase = true) && !includeThinkingInContext) {
                     node.copy(content = stripThinkingTagsForHistory(node.content))
                 } else {
                     node
@@ -902,19 +1068,21 @@ class LocalInferenceEngine(
         fallbackFormattedPrompt: String,
         effectiveCtxSize: Int = 2048,
         enableThinking: Boolean = false,
+        includeThinkingInContext: Boolean = false,
+        nPredictLimit: Int = -1,
         chatTemplateHint: String? = null,
         modelArchHint: String? = null,
         modelNameHint: String = ""
     ): String {
-        val nPredict = computeGenerationTokenBudget(effectiveCtxSize)
+        val nPredict = computeGenerationTokenBudget(effectiveCtxSize, nPredictLimit)
         val maxPromptChars = computeMaxPromptChars(effectiveCtxSize, nPredict)
-        val maxTurns = if (effectiveCtxSize <= 1024) 2 else 4
-        val maxTurnChars = if (effectiveCtxSize <= 1024) 220 else 400
+        val maxTurns = if (effectiveCtxSize <= 1024) 2 else if (effectiveCtxSize <= 4096) 4 else 8
+        val maxTurnChars = if (effectiveCtxSize <= 1024) 220 else 600
         val boundedUserPrompt = userPrompt.trim().take((maxPromptChars / 2).coerceAtLeast(200))
 
         var turnsToKeep = maxTurns
         while (turnsToKeep >= 0) {
-            val boundedHistory = filterRecentHistory(conversationHistory, turnsToKeep, maxTurnChars)
+            val boundedHistory = filterRecentHistory(conversationHistory, turnsToKeep, maxTurnChars, includeThinkingInContext)
             val candidate = buildFormattedPrompt(
                 userPrompt = boundedUserPrompt,
                 persona = persona,
@@ -923,6 +1091,7 @@ class LocalInferenceEngine(
                 effectiveCtxSize = effectiveCtxSize,
                 chatTemplateHint = chatTemplateHint,
                 enableThinking = enableThinking,
+                includeThinkingInContext = includeThinkingInContext,
                 modelArchHint = modelArchHint,
                 modelNameHint = modelNameHint
             )
@@ -953,7 +1122,11 @@ class LocalInferenceEngine(
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
         hardwareMeasuredMilliwatts: Float,
-        enableThinking: Boolean = false
+        enableThinking: Boolean = false,
+        customContextSize: Int = 0,
+        nPredictLimit: Int = -1,
+        includeThinkingInContext: Boolean = false,
+        kvCacheType: String = "Q8_0"
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
@@ -1000,7 +1173,10 @@ class LocalInferenceEngine(
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
                     hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
-                    enableThinking = enableThinking
+                    enableThinking = enableThinking,
+                    customContextSize = customContextSize,
+                    nPredictLimit = nPredictLimit,
+                    includeThinkingInContext = includeThinkingInContext
                 )
             )
         } else {
@@ -1017,7 +1193,11 @@ class LocalInferenceEngine(
                     conversationHistory = conversationHistory,
                     hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
                     backendLabel = "librnllama JNI (llama.cpp)",
-                    enableThinking = enableThinking
+                    enableThinking = enableThinking,
+                    customContextSize = customContextSize,
+                    nPredictLimit = nPredictLimit,
+                    includeThinkingInContext = includeThinkingInContext,
+                    kvCacheType = kvCacheType
                 )
             )
         }
@@ -1037,7 +1217,11 @@ class LocalInferenceEngine(
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
         hardwareMeasuredMilliwatts: Float,
-        enableThinking: Boolean = false
+        enableThinking: Boolean = false,
+        customContextSize: Int = 0,
+        nPredictLimit: Int = -1,
+        includeThinkingInContext: Boolean = false,
+        @Suppress("UNUSED_PARAMETER") kvCacheType: String = "Q8_0"
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
@@ -1084,7 +1268,10 @@ class LocalInferenceEngine(
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
                     hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
-                    enableThinking = enableThinking
+                    enableThinking = enableThinking,
+                    customContextSize = customContextSize,
+                    nPredictLimit = nPredictLimit,
+                    includeThinkingInContext = includeThinkingInContext
                 )
             )
         } else {
@@ -1120,7 +1307,10 @@ class LocalInferenceEngine(
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
         hardwareMeasuredMilliwatts: Float,
-        enableThinking: Boolean = false
+        enableThinking: Boolean = false,
+        customContextSize: Int = 0,
+        nPredictLimit: Int = -1,
+        includeThinkingInContext: Boolean = false
     ): Flow<StreamingStep> = flow {
         inferenceMutex.withLock {
             var handle = 0L
@@ -1135,11 +1325,12 @@ class LocalInferenceEngine(
                 }
 
                 val modelTrainedCtx = headerInfo.contextLength?.takeIf { it >= 512 } ?: model.contextWindow.coerceAtLeast(2048)
-                val requestedCtx = powerProfile.contextLimit.coerceAtMost(modelTrainedCtx).coerceIn(512, 4096)
+                val baseCtx = if (customContextSize in 2048..131072) customContextSize else powerProfile.contextLimit
+                val requestedCtx = baseCtx.coerceAtMost(modelTrainedCtx).coerceIn(512, 131072)
                 val effectivePrimaryCtx = if (memAssessment.availMemMb < 1024L) {
                     requestedCtx.coerceAtMost(1024)
                 } else {
-                    requestedCtx.coerceAtMost(2048)
+                    requestedCtx.coerceAtMost(8192)
                 }
                 val clampedThreads = powerProfile.cpuThreads.coerceIn(1, 8)
                 val canonicalPath = modelFile.absolutePath
@@ -1148,7 +1339,7 @@ class LocalInferenceEngine(
                     if (mountedNativeBridgeHandle != 0L &&
                         mountedNativeEngineId == engineId &&
                         mountedModelPath == canonicalPath &&
-                        mountedCtxSize in 512..4096
+                        mountedCtxSize in 512..131072
                     ) {
                         handle = mountedNativeBridgeHandle
                     }
@@ -1158,6 +1349,7 @@ class LocalInferenceEngine(
                     unmountLlamaContextLocked()
                     val attempts = listOf(
                         Triple(effectivePrimaryCtx, 512, true),
+                        Triple(2048, 512, true),
                         Triple(1024, 256, true),
                         Triple(512, 256, true),
                         Triple(512, 256, false)
@@ -1193,9 +1385,15 @@ class LocalInferenceEngine(
                     val nativeErr = LeafyNativeBridge.nativeGetLastError().trim()
                     val archDetail = headerInfo.architecture?.let { "arch='$it', " } ?: ""
                     val quantDetail = "quant='${headerInfo.quantizationLabel}', "
-                    val headerDetail = "${archDetail}${quantDetail}GGUF v${headerInfo.version}, tensors=${headerInfo.tensorCount}, size=${modelFile.length() / (1024 * 1024)} MB, availRam=${memAssessment.availMemMb} MB"
+                    val sizeMb = ModelDownloadManager.getModelFileLength(context, file = modelFile) / (1024L * 1024L)
+                    val headerDetail = "${archDetail}${quantDetail}GGUF v${headerInfo.version}, tensors=${headerInfo.tensorCount}, size=$sizeMb MB, availRam=${memAssessment.availMemMb} MB"
+                    val tmacArchNote = if (engineId == AiRuntime.T_MAC.id &&
+                        (headerInfo.architecture == "qwen3" || headerInfo.quantizationLabel.contains("ftype=41") || headerInfo.quantizationLabel.contains("Q1_0", ignoreCase = true))
+                    ) {
+                        " [Bundled libtmac_llama.so (kaleid-liner/llama.cpp eb07ecf) supports GGUF tensor types 0..39 (Llama/BitNet Q4_0, TQ1_0, TQ2_0, INT2 LUT) and does not include '${headerInfo.architecture ?: "qwen3"}' / type 41 (Q1_0); switch runtime to llama.cpp or Bitnet.cpp for '${model.name}'.]"
+                    } else ""
                     throw IllegalStateException(
-                        "Native $engineId initialization failed (${nativeErr.ifBlank { "nativeLoadModel returned 0L" }}; $headerDetail)."
+                        "Native $engineId initialization failed (${nativeErr.ifBlank { "nativeLoadModel returned 0L" }}; $headerDetail)$tmacArchNote."
                     )
                 }
 
@@ -1204,7 +1402,7 @@ class LocalInferenceEngine(
                 }
 
                 val effectiveCtx = mountedCtxSize.takeIf { it > 0 } ?: effectivePrimaryCtx
-                val nPredict = computeGenerationTokenBudget(effectiveCtx)
+                val nPredict = computeGenerationTokenBudget(effectiveCtx, nPredictLimit)
                 val runtimeBackend = LeafyNativeBridge.nativeGetBackendDescription(handle).ifBlank { engineId }
                 val runtimeDesc = LeafyNativeBridge.nativeGetModelDescription(handle).ifBlank {
                     headerInfo.modelName ?: headerInfo.architecture ?: model.name
@@ -1221,6 +1419,8 @@ class LocalInferenceEngine(
                     effectiveCtxSize = effectiveCtx,
                     ggufChatTemplate = headerInfo.chatTemplate,
                     enableThinking = enableThinking,
+                    includeThinkingInContext = includeThinkingInContext,
+                    nPredictLimit = nPredictLimit,
                     modelArchHint = headerInfo.architecture,
                     modelNameHint = headerInfo.modelName ?: model.name
                 )
@@ -1244,30 +1444,33 @@ class LocalInferenceEngine(
                 val targetHandle = handle
 
                 genJob = engineScope.launch {
-                    try {
-                        nativeTimings = LeafyNativeBridge.nativeGenerateStream(
-                            handle = targetHandle,
-                            prompt = effectivePrompt,
-                            nPredict = nPredict,
-                            nThreads = clampedThreads,
-                            temperature = persona.temperature,
-                            topP = persona.topP,
-                            repeatPenalty = persona.repeatPenalty,
-                            stopSequences = STOP_SEQUENCES.toTypedArray(),
-                            callback = TokenStreamCallback { piece ->
-                                if (isCancelled) {
-                                    false
-                                } else {
-                                    tokenChannel.trySend(piece)
-                                    true
+                    openPowerProfileGovernorSession(powerProfile).use { governorSession ->
+                        try {
+                            nativeTimings = LeafyNativeBridge.nativeGenerateStream(
+                                handle = targetHandle,
+                                prompt = effectivePrompt,
+                                nPredict = nPredict,
+                                nThreads = clampedThreads,
+                                temperature = persona.temperature,
+                                topP = persona.topP,
+                                repeatPenalty = persona.repeatPenalty,
+                                stopSequences = STOP_SEQUENCES.toTypedArray(),
+                                callback = TokenStreamCallback { piece ->
+                                    if (isCancelled) {
+                                        false
+                                    } else {
+                                        governorSession.onTokenSampled()
+                                        tokenChannel.trySend(piece)
+                                        true
+                                    }
                                 }
-                            }
-                        )
-                    } catch (t: Throwable) {
-                        invalidateOnError = true
-                        genError = t
-                    } finally {
-                        tokenChannel.close()
+                            )
+                        } catch (t: Throwable) {
+                            invalidateOnError = true
+                            genError = t
+                        } finally {
+                            tokenChannel.close()
+                        }
                     }
                 }
 
@@ -1357,13 +1560,15 @@ class LocalInferenceEngine(
         effectiveCtxSize: Int,
         ggufChatTemplate: String? = null,
         enableThinking: Boolean = false,
+        includeThinkingInContext: Boolean = false,
+        nPredictLimit: Int = -1,
         modelArchHint: String? = null,
         modelNameHint: String = ""
     ): String {
-        val nPredict = computeGenerationTokenBudget(effectiveCtxSize)
+        val nPredict = computeGenerationTokenBudget(effectiveCtxSize, nPredictLimit)
         val maxPromptChars = computeMaxPromptChars(effectiveCtxSize, nPredict)
-        val maxTurns = if (effectiveCtxSize <= 1024) 2 else 4
-        val maxTurnChars = if (effectiveCtxSize <= 1024) 220 else 400
+        val maxTurns = if (effectiveCtxSize <= 1024) 2 else if (effectiveCtxSize <= 4096) 4 else 8
+        val maxTurnChars = if (effectiveCtxSize <= 1024) 220 else 600
         val maxRagChars = if (effectiveCtxSize <= 512) 180 else 300
 
         val ragContextText = if (retrievedRag.isNotEmpty()) {
@@ -1372,7 +1577,7 @@ class LocalInferenceEngine(
             }
         } else ""
         val systemInstruction = "${persona.systemPrompt.take(400)}$ragContextText".trim()
-        val boundedHistory = filterRecentHistory(conversationHistory, maxTurns, maxTurnChars)
+        val boundedHistory = filterRecentHistory(conversationHistory, maxTurns, maxTurnChars, includeThinkingInContext)
 
         val roles = mutableListOf<String>()
         val contents = mutableListOf<String>()
@@ -1387,14 +1592,18 @@ class LocalInferenceEngine(
         roles.add("user")
         contents.add(userPrompt.trim().take((maxPromptChars / 2).coerceAtLeast(200)))
 
-        val templated = try {
-            LeafyNativeBridge.nativeApplyChatTemplate(
-                handle = handle,
-                roles = roles.toTypedArray(),
-                contents = contents.toTypedArray(),
-                addAssistantPrefix = true
-            )
-        } catch (_: Throwable) {
+        val templated = if (persona.jinjaEnabled) {
+            try {
+                LeafyNativeBridge.nativeApplyChatTemplate(
+                    handle = handle,
+                    roles = roles.toTypedArray(),
+                    contents = contents.toTypedArray(),
+                    addAssistantPrefix = true
+                )
+            } catch (_: Throwable) {
+                ""
+            }
+        } else {
             ""
         }
         if (templated.isNotBlank()) {
@@ -1415,6 +1624,7 @@ class LocalInferenceEngine(
             effectiveCtxSize = effectiveCtxSize,
             chatTemplateHint = ggufChatTemplate,
             enableThinking = enableThinking,
+            includeThinkingInContext = includeThinkingInContext,
             modelArchHint = modelArchHint,
             modelNameHint = modelNameHint
         )
@@ -1442,7 +1652,11 @@ class LocalInferenceEngine(
         conversationHistory: List<MessageNodeEntity>,
         hardwareMeasuredMilliwatts: Float,
         backendLabel: String,
-        enableThinking: Boolean = false
+        enableThinking: Boolean = false,
+        customContextSize: Int = 0,
+        nPredictLimit: Int = -1,
+        includeThinkingInContext: Boolean = false,
+        kvCacheType: String = "Q8_0"
     ): Flow<StreamingStep> = flow {
         inferenceMutex.withLock {
             var llamaCtx: LlamaContext? = null
@@ -1450,18 +1664,20 @@ class LocalInferenceEngine(
             var invalidateMountedOnError = false
             try {
                 val modelTrainedCtx = headerInfo.contextLength?.takeIf { it >= 512 } ?: model.contextWindow.coerceAtLeast(2048)
-                val targetCtx = powerProfile.contextLimit.coerceAtMost(modelTrainedCtx).coerceIn(512, 4096)
+                val baseCtx = if (customContextSize in 2048..131072) customContextSize else powerProfile.contextLimit
+                val targetCtx = baseCtx.coerceAtMost(modelTrainedCtx).coerceIn(512, 131072)
                 llamaCtx = getOrMountNativeLlamaContextLocked(
                     modelFile = modelFile,
                     requestedCtx = targetCtx,
                     requestedThreads = powerProfile.cpuThreads,
-                    preferredBatchSize = 512
+                    preferredBatchSize = powerProfile.preferredBatchSize,
+                    kvCacheType = kvCacheType
                 )
                 synchronized(nativeHandleLock) {
                     activeLlamaContext = llamaCtx
                 }
                 val effectiveCtx = mountedCtxSize.takeIf { it > 0 } ?: targetCtx
-                val nPredict = computeGenerationTokenBudget(effectiveCtx)
+                val nPredict = computeGenerationTokenBudget(effectiveCtx, nPredictLimit)
 
                 val effectivePrompt = resolveModelChatPrompt(
                     llamaCtx = llamaCtx,
@@ -1472,6 +1688,8 @@ class LocalInferenceEngine(
                     fallbackFormattedPrompt = formattedPrompt,
                     effectiveCtxSize = effectiveCtx,
                     enableThinking = enableThinking,
+                    includeThinkingInContext = includeThinkingInContext,
+                    nPredictLimit = nPredictLimit,
                     chatTemplateHint = headerInfo.chatTemplate,
                     modelArchHint = headerInfo.architecture,
                     modelNameHint = headerInfo.modelName ?: model.name
@@ -1502,36 +1720,55 @@ class LocalInferenceEngine(
                 )
 
                 val tokenChannel = Channel<String>(Channel.UNLIMITED)
+                var activeGovernorSession: PowerProfileGovernorSession? = null
                 llamaCtx.setTokenCallback { partialToken ->
                     if (!isCancelled) {
+                        activeGovernorSession?.onTokenSampled()
                         tokenChannel.trySend(partialToken)
                     }
                 }
 
-                val effectiveThreads = mountedThreads.takeIf { it > 0 }?.coerceAtMost(powerProfile.cpuThreads)
-                    ?: powerProfile.cpuThreads.coerceIn(1, 8)
+                val effectiveThreads = powerProfile.cpuThreads.coerceIn(1, 8)
                 val completionParams = mapOf<String, Any>(
                     "prompt" to effectivePrompt,
                     "n_predict" to nPredict,
                     "temperature" to persona.temperature.toDouble(),
+                    "top_k" to persona.topK,
                     "top_p" to persona.topP.toDouble(),
+                    "min_p" to persona.minP.toDouble(),
+                    "xtc_threshold" to persona.xtcThreshold.toDouble(),
+                    "xtc_probability" to persona.xtcProbability.toDouble(),
+                    "typical_p" to persona.typicalP.toDouble(),
+                    "penalty_last_n" to persona.penaltyLastN,
                     "penalty_repeat" to persona.repeatPenalty.toDouble(),
+                    "penalty_freq" to persona.penaltyFreq.toDouble(),
+                    "penalty_present" to persona.penaltyPresent.toDouble(),
+                    "mirostat" to persona.mirostat,
+                    "mirostat_tau" to persona.mirostatTau.toDouble(),
+                    "mirostat_eta" to persona.mirostatEta.toDouble(),
+                    "seed" to persona.seed,
+                    "jinja" to persona.jinjaEnabled,
                     "emit_partial_completion" to true,
                     "n_threads" to effectiveThreads,
+                    "n_batch" to powerProfile.preferredBatchSize,
                     "stop" to STOP_SEQUENCES
                 )
 
                 var nativeMetrics = NativeCompletionMetrics()
                 var completionError: Throwable? = null
                 completionJob = engineScope.launch {
-                    try {
-                        val result = llamaCtx.completion(completionParams)
-                        nativeMetrics = extractNativeCompletionMetrics(result)
-                    } catch (e: Throwable) {
-                        invalidateMountedOnError = true
-                        completionError = e
-                    } finally {
-                        tokenChannel.close()
+                    openPowerProfileGovernorSession(powerProfile).use { governorSession ->
+                        activeGovernorSession = governorSession
+                        try {
+                            val result = llamaCtx.completion(completionParams)
+                            nativeMetrics = extractNativeCompletionMetrics(result)
+                        } catch (e: Throwable) {
+                            invalidateMountedOnError = true
+                            completionError = e
+                        } finally {
+                            activeGovernorSession = null
+                            tokenChannel.close()
+                        }
                     }
                 }
 
@@ -1685,7 +1922,10 @@ class LocalInferenceEngine(
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
         hardwareMeasuredMilliwatts: Float,
-        enableThinking: Boolean = false
+        enableThinking: Boolean = false,
+        customContextSize: Int = 0,
+        nPredictLimit: Int = -1,
+        includeThinkingInContext: Boolean = false
     ): Flow<StreamingStep> = flow {
         val pteHeader = readPteHeader(modelFile)
         val ggufHeader = readGgufHeader(modelFile)
@@ -1728,8 +1968,9 @@ class LocalInferenceEngine(
                 var llmModule: LlmModule? = null
                 var genJob: Job? = null
                 try {
-                    val targetCtx = powerProfile.contextLimit.coerceAtMost(model.contextWindow.coerceAtLeast(512))
-                    val nPredict = computeGenerationTokenBudget(targetCtx)
+                    val baseCtx = if (customContextSize in 2048..131072) customContextSize else powerProfile.contextLimit
+                    val targetCtx = baseCtx.coerceAtMost(model.contextWindow.coerceAtLeast(512))
+                    val nPredict = computeGenerationTokenBudget(targetCtx, nPredictLimit)
                     val boundedPrompt = buildFormattedPrompt(
                         userPrompt = rawUserPrompt,
                         persona = persona,
@@ -1737,6 +1978,7 @@ class LocalInferenceEngine(
                         conversationHistory = conversationHistory,
                         effectiveCtxSize = targetCtx,
                         enableThinking = enableThinking,
+                        includeThinkingInContext = includeThinkingInContext,
                         modelNameHint = model.name
                     )
                     val tpsTracker = LiveTpsTelemetryTracker(
@@ -1773,23 +2015,26 @@ class LocalInferenceEngine(
 
                     var genError: Throwable? = null
                     genJob = engineScope.launch {
-                        try {
-                            llmModule.generate(
-                                boundedPrompt,
-                                nPredict,
-                                object : LlmCallback {
-                                    override fun onResult(result: String) {
-                                        if (!isCancelled && result.isNotEmpty()) {
-                                            tokenChannel.trySend(result)
+                        openPowerProfileGovernorSession(powerProfile).use { governorSession ->
+                            try {
+                                llmModule.generate(
+                                    boundedPrompt,
+                                    nPredict,
+                                    object : LlmCallback {
+                                        override fun onResult(result: String) {
+                                            if (!isCancelled && result.isNotEmpty()) {
+                                                governorSession.onTokenSampled()
+                                                tokenChannel.trySend(result)
+                                            }
                                         }
-                                    }
-                                },
-                                false
-                            )
-                        } catch (e: Throwable) {
-                            genError = e
-                        } finally {
-                            tokenChannel.close()
+                                    },
+                                    false
+                                )
+                            } catch (e: Throwable) {
+                                genError = e
+                            } finally {
+                                tokenChannel.close()
+                            }
                         }
                     }
 
@@ -1991,7 +2236,11 @@ class LocalInferenceEngine(
         retrievedRag: List<RetrievedRagSnippet>,
         conversationHistory: List<MessageNodeEntity>,
         hardwareMeasuredMilliwatts: Float,
-        enableThinking: Boolean = false
+        enableThinking: Boolean = false,
+        customContextSize: Int = 0,
+        nPredictLimit: Int = -1,
+        includeThinkingInContext: Boolean = false,
+        kvCacheType: String = "Q8_0"
     ): Flow<StreamingStep> = flow {
         val headerInfo = readGgufHeader(modelFile)
         if (!headerInfo.isValidGguf) {
@@ -2029,7 +2278,10 @@ class LocalInferenceEngine(
                     retrievedRag = retrievedRag,
                     conversationHistory = conversationHistory,
                     hardwareMeasuredMilliwatts = hardwareMeasuredMilliwatts,
-                    enableThinking = enableThinking
+                    enableThinking = enableThinking,
+                    customContextSize = customContextSize,
+                    nPredictLimit = nPredictLimit,
+                    includeThinkingInContext = includeThinkingInContext
                 )
             )
         } else {
@@ -2114,6 +2366,7 @@ class LocalInferenceEngine(
         effectiveCtxSize: Int = 2048,
         chatTemplateHint: String? = null,
         enableThinking: Boolean = false,
+        includeThinkingInContext: Boolean = false,
         modelArchHint: String? = null,
         modelNameHint: String = ""
     ): String {
@@ -2128,7 +2381,7 @@ class LocalInferenceEngine(
         } else ""
 
         val systemInstruction = "${persona.systemPrompt.take(400)}$ragContextText".trim()
-        val recentHistory = filterRecentHistory(conversationHistory, maxTurns, maxTurnChars)
+        val recentHistory = filterRecentHistory(conversationHistory, maxTurns, maxTurnChars, includeThinkingInContext)
         val tmpl = chatTemplateHint.orEmpty()
 
         val basePrompt = when {
@@ -2205,39 +2458,32 @@ class LocalInferenceEngine(
      * (`general.architecture`, `general.name`, `general.file_type`, `<arch>.context_length`).
      */
     fun readGgufHeader(file: File): GgufHeaderInfo {
-        if (!file.exists() || file.length() < 24) {
+        val resolved = ModelDownloadManager.ensureModelFileAccessible(context, file = file)
+        val fileLen = ModelDownloadManager.getModelFileLength(context, file = resolved)
+        if (!ModelDownloadManager.isModelFileAvailable(context, file = resolved) || fileLen < 24L) {
             return GgufHeaderInfo(isValidGguf = false, magicString = "EMPTY", version = 0, tensorCount = 0L, metadataKvCount = 0L)
         }
         return try {
-            RandomAccessFile(file, "r").use { raf ->
-                val magicBytes = ByteArray(4)
-                raf.readFully(magicBytes)
-                val magicStr = String(magicBytes, Charsets.US_ASCII)
-                val isGguf = (magicStr == "GGUF")
-
-                if (!isGguf) {
-                    GgufHeaderInfo(isValidGguf = false, magicString = magicStr, version = 0, tensorCount = 0L, metadataKvCount = 0L)
-                } else {
-                    val version = readIntLittleEndian(raf)
-                    val tensorCount = readLongLittleEndian(raf)
-                    val metadataKvCount = readLongLittleEndian(raf)
-                    val parsedMeta = readGgufMetadataKeys(raf, file.length(), metadataKvCount)
-                    val quantLabel = mapGgufFileTypeToQuantization(parsedMeta.fileType)
-                        ?: parsedMeta.architecture?.let { "GGUF v$version ($it)" }
-                        ?: "GGUF v$version"
-                    GgufHeaderInfo(
-                        isValidGguf = true,
-                        magicString = magicStr,
-                        version = version,
-                        tensorCount = tensorCount,
-                        metadataKvCount = metadataKvCount,
-                        architecture = parsedMeta.architecture,
-                        modelName = parsedMeta.modelName,
-                        fileType = parsedMeta.fileType,
-                        contextLength = parsedMeta.contextLength,
-                        chatTemplate = parsedMeta.chatTemplate,
-                        quantizationLabel = quantLabel
-                    )
+            if (!resolved.path.startsWith("/proc/self/fd/") && resolved.exists() && resolved.canRead()) {
+                RandomAccessFile(resolved, "r").use { raf ->
+                    parseGgufFromRandomAccess(raf, fileLen)
+                }
+            } else {
+                val stream = ModelDownloadManager.openModelInputStream(context, file = resolved)
+                    ?: return GgufHeaderInfo(isValidGguf = false, magicString = "UNREADABLE", version = 0, tensorCount = 0L, metadataKvCount = 0L)
+                stream.use { ins ->
+                    val maxHeaderBytes = minOf(fileLen, 512L * 1024L).toInt()
+                    val buf = ByteArray(maxHeaderBytes)
+                    var totalRead = 0
+                    while (totalRead < maxHeaderBytes) {
+                        val r = ins.read(buf, totalRead, maxHeaderBytes - totalRead)
+                        if (r <= 0) break
+                        totalRead += r
+                    }
+                    if (totalRead < 24) {
+                        return GgufHeaderInfo(isValidGguf = false, magicString = "EMPTY", version = 0, tensorCount = 0L, metadataKvCount = 0L)
+                    }
+                    parseGgufFromByteBuffer(buf, totalRead, fileLen)
                 }
             }
         } catch (e: Exception) {
@@ -2245,57 +2491,205 @@ class LocalInferenceEngine(
         }
     }
 
+    private fun parseGgufFromRandomAccess(raf: RandomAccessFile, fileLen: Long): GgufHeaderInfo {
+        val magicBytes = ByteArray(4)
+        raf.readFully(magicBytes)
+        val magicStr = String(magicBytes, Charsets.US_ASCII)
+        val isGguf = (magicStr == "GGUF")
+        if (!isGguf) {
+            return GgufHeaderInfo(isValidGguf = false, magicString = magicStr, version = 0, tensorCount = 0L, metadataKvCount = 0L)
+        }
+        val version = readIntLittleEndian(raf)
+        val tensorCount = readLongLittleEndian(raf)
+        val metadataKvCount = readLongLittleEndian(raf)
+        val parsedMeta = readGgufMetadataKeys(raf, fileLen, metadataKvCount)
+        val quantLabel = mapGgufFileTypeToQuantization(parsedMeta.fileType)
+            ?: parsedMeta.architecture?.let { "GGUF v$version ($it)" }
+            ?: "GGUF v$version"
+        return GgufHeaderInfo(
+            isValidGguf = true,
+            magicString = magicStr,
+            version = version,
+            tensorCount = tensorCount,
+            metadataKvCount = metadataKvCount,
+            architecture = parsedMeta.architecture,
+            modelName = parsedMeta.modelName,
+            fileType = parsedMeta.fileType,
+            contextLength = parsedMeta.contextLength,
+            chatTemplate = parsedMeta.chatTemplate,
+            quantizationLabel = quantLabel
+        )
+    }
+
+    private fun parseGgufFromByteBuffer(buf: ByteArray, limitLen: Int, fullFileLen: Long): GgufHeaderInfo {
+        val magicStr = String(buf, 0, 4, Charsets.US_ASCII)
+        if (magicStr != "GGUF") {
+            return GgufHeaderInfo(isValidGguf = false, magicString = magicStr, version = 0, tensorCount = 0L, metadataKvCount = 0L)
+        }
+        val bb = java.nio.ByteBuffer.wrap(buf, 0, limitLen).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        bb.position(4)
+        val version = bb.int
+        val tensorCount = bb.long
+        val metadataKvCount = bb.long
+        var arch: String? = null
+        var name: String? = null
+        var fileType: Int? = null
+        var ctxLen: Int? = null
+        var chatTemplate: String? = null
+        try {
+            val kvLimit = metadataKvCount.coerceIn(0L, 96L).toInt()
+            for (i in 0 until kvLimit) {
+                if (bb.remaining() < 12) break
+                val keyLen = bb.long
+                if (keyLen <= 0L || keyLen > 256L || bb.remaining() < keyLen.toInt() + 4) break
+                val keyBytes = ByteArray(keyLen.toInt())
+                bb.get(keyBytes)
+                val key = String(keyBytes, Charsets.UTF_8)
+                val valType = bb.int
+                when {
+                    (key == "general.architecture" || key == "general.name" || key == "tokenizer.chat_template") && valType == 8 -> {
+                        if (bb.remaining() < 8) break
+                        val strLen = bb.long
+                        val maxAllowedLen = if (key == "tokenizer.chat_template") 16384L else 512L
+                        if (strLen < 0L || strLen > maxAllowedLen || bb.remaining() < strLen.toInt()) break
+                        val strBytes = ByteArray(strLen.toInt())
+                        bb.get(strBytes)
+                        val strVal = String(strBytes, Charsets.UTF_8)
+                        when (key) {
+                            "general.architecture" -> arch = strVal
+                            "general.name" -> name = strVal
+                            "tokenizer.chat_template" -> chatTemplate = strVal
+                        }
+                    }
+                    key == "general.file_type" && (valType == 4 || valType == 5) -> {
+                        if (bb.remaining() < 4) break
+                        fileType = bb.int
+                    }
+                    key.endsWith(".context_length") && (valType == 4 || valType == 5) -> {
+                        if (bb.remaining() < 4) break
+                        ctxLen = bb.int
+                    }
+                    key.endsWith(".context_length") && (valType == 10 || valType == 11) -> {
+                        if (bb.remaining() < 8) break
+                        ctxLen = bb.long.toInt()
+                    }
+                    else -> {
+                        val skip: Int = when (valType) {
+                            0, 1, 7 -> 1
+                            2, 3 -> 2
+                            4, 5, 6 -> 4
+                            10, 11, 12 -> 8
+                            8 -> {
+                                if (bb.remaining() < 8) -1 else bb.long.toInt()
+                            }
+                            9 -> {
+                                if (bb.remaining() < 12) -1 else {
+                                    val elemType = bb.int
+                                    val count = bb.long
+                                    val elemSz = when (elemType) {
+                                        0, 1, 7 -> 1
+                                        2, 3 -> 2
+                                        4, 5, 6 -> 4
+                                        10, 11, 12 -> 8
+                                        else -> -1
+                                    }
+                                    if (elemSz > 0 && count in 0..262144) (elemSz * count).toInt() else -1
+                                }
+                            }
+                            else -> -1
+                        }
+                        if (skip < 0 || bb.remaining() < skip) break
+                        bb.position(bb.position() + skip)
+                    }
+                }
+                if (arch != null && name != null && fileType != null && ctxLen != null && chatTemplate != null) break
+            }
+        } catch (_: Throwable) {}
+        val quantLabel = mapGgufFileTypeToQuantization(fileType)
+            ?: arch?.let { "GGUF v$version ($it)" }
+            ?: "GGUF v$version"
+        return GgufHeaderInfo(
+            isValidGguf = true,
+            magicString = magicStr,
+            version = version,
+            tensorCount = tensorCount,
+            metadataKvCount = metadataKvCount,
+            architecture = arch,
+            modelName = name,
+            fileType = fileType,
+            contextLength = ctxLen,
+            chatTemplate = chatTemplate,
+            quantizationLabel = quantLabel
+        )
+    }
+
     fun readPteHeader(file: File): PteHeaderInfo {
-        if (!file.exists() || file.length() < 8) {
+        val resolved = ModelDownloadManager.ensureModelFileAccessible(context, file = file)
+        val fileLen = ModelDownloadManager.getModelFileLength(context, file = resolved)
+        if (!ModelDownloadManager.isModelFileAvailable(context, file = resolved) || fileLen < 8L) {
             return PteHeaderInfo(isValidPte = false, magicString = "EMPTY", version = 0, fileSize = 0L)
         }
         return try {
-            RandomAccessFile(file, "r").use { raf ->
-                val headerBytes = ByteArray(8)
-                raf.readFully(headerBytes)
-                val magic0to3 = String(headerBytes.sliceArray(0..3), Charsets.US_ASCII)
-                if (magic0to3 == "GGUF") {
-                    return PteHeaderInfo(isValidPte = false, magicString = "GGUF", version = 0, fileSize = file.length())
+            val headerBytes = ByteArray(8)
+            val stream = ModelDownloadManager.openModelInputStream(context, file = resolved)
+                ?: return PteHeaderInfo(isValidPte = false, magicString = "UNREADABLE", version = 0, fileSize = 0L)
+            stream.use { ins ->
+                var total = 0
+                while (total < 8) {
+                    val r = ins.read(headerBytes, total, 8 - total)
+                    if (r <= 0) break
+                    total += r
                 }
-                val ident4to7 = String(headerBytes.sliceArray(4..7), Charsets.US_ASCII)
-                val isPte = ident4to7.startsWith("ET") || ident4to7.startsWith("PT") || file.name.endsWith(".pte", ignoreCase = true)
-                PteHeaderInfo(
-                    isValidPte = isPte,
-                    magicString = ident4to7,
-                    version = 1,
-                    fileSize = file.length()
-                )
+                if (total < 8) return PteHeaderInfo(isValidPte = false, magicString = "EMPTY", version = 0, fileSize = 0L)
             }
+            val magic0to3 = String(headerBytes.sliceArray(0..3), Charsets.US_ASCII)
+            if (magic0to3 == "GGUF") {
+                return PteHeaderInfo(isValidPte = false, magicString = "GGUF", version = 0, fileSize = fileLen)
+            }
+            val ident4to7 = String(headerBytes.sliceArray(4..7), Charsets.US_ASCII)
+            val isPte = ident4to7.startsWith("ET") || ident4to7.startsWith("PT") || resolved.name.endsWith(".pte", ignoreCase = true)
+            PteHeaderInfo(
+                isValidPte = isPte,
+                magicString = ident4to7,
+                version = 1,
+                fileSize = fileLen
+            )
         } catch (e: Exception) {
             PteHeaderInfo(isValidPte = false, magicString = "ERROR: ${e.message}", version = 0, fileSize = 0L)
         }
     }
 
     fun readTmacHeader(file: File): TmacHeaderInfo {
-        if (!file.exists() || file.length() < 16) {
+        val resolved = ModelDownloadManager.ensureModelFileAccessible(context, file = file)
+        val fileLen = ModelDownloadManager.getModelFileLength(context, file = resolved)
+        if (!ModelDownloadManager.isModelFileAvailable(context, file = resolved) || fileLen < 16L) {
             return TmacHeaderInfo(isValidTmac = false, formatType = "EMPTY", lutBits = 0, tensorCount = 0L)
         }
         return try {
-            RandomAccessFile(file, "r").use { raf ->
-                val magicBytes = ByteArray(4)
-                raf.readFully(magicBytes)
-                val magicStr = String(magicBytes, Charsets.US_ASCII)
-                val isTmac = magicStr == "TMAC" || file.name.endsWith(".tmac", ignoreCase = true)
-                val bits = if (raf.length() >= 8) {
-                    val b = raf.read()
-                    if (b in 2..4) b else 3
-                } else 3
-                val tensors = if (raf.length() >= 16) {
-                    raf.seek(8)
-                    readLongLittleEndian(raf).coerceAtLeast(1L)
-                } else 1L
-                TmacHeaderInfo(
-                    isValidTmac = isTmac,
-                    formatType = if (isTmac) "INT${bits}-LUT" else magicStr,
-                    lutBits = bits,
-                    tensorCount = tensors
-                )
+            val headerBytes = ByteArray(16)
+            val stream = ModelDownloadManager.openModelInputStream(context, file = resolved)
+                ?: return TmacHeaderInfo(isValidTmac = false, formatType = "ERROR", lutBits = 0, tensorCount = 0L)
+            stream.use { ins ->
+                var total = 0
+                while (total < 16) {
+                    val r = ins.read(headerBytes, total, 16 - total)
+                    if (r <= 0) break
+                    total += r
+                }
+                if (total < 16) return TmacHeaderInfo(isValidTmac = false, formatType = "EMPTY", lutBits = 0, tensorCount = 0L)
             }
+            val magicStr = String(headerBytes, 0, 4, Charsets.US_ASCII)
+            val isTmac = magicStr == "TMAC" || resolved.name.endsWith(".tmac", ignoreCase = true)
+            val b = headerBytes[4].toInt() and 0xFF
+            val bits = if (b in 2..4) b else 3
+            val bb = java.nio.ByteBuffer.wrap(headerBytes, 8, 8).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val tensors = bb.long.coerceAtLeast(1L)
+            TmacHeaderInfo(
+                isValidTmac = isTmac,
+                formatType = if (isTmac) "INT${bits}-LUT" else magicStr,
+                lutBits = bits,
+                tensorCount = tensors
+            )
         } catch (e: Exception) {
             TmacHeaderInfo(isValidTmac = false, formatType = "ERROR", lutBits = 0, tensorCount = 0L)
         }
